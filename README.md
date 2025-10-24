@@ -15,13 +15,7 @@ A trajectory optimization framework for GTOC13 using JAX for high-performance co
 Install the package in development mode:
 
 ```bash
-pip install -e .
-```
-
-Or with development dependencies:
-
-```bash
-pip install -e ".[dev]"
+python -m pip install -e .
 ```
 
 ## Quick Start
