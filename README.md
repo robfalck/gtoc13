@@ -5,6 +5,7 @@ A trajectory optimization framework for GTOC13 using JAX for high-performance co
 ## Features
 
 - **Orbital Mechanics**: JAX-based orbital propagation with Kepler solvers
+- **Lambert Solver**: Two-point boundary value problem solver for trajectory design
 - **Solar Sail Dynamics**: Solar sail acceleration modeling
 - **Scoring Functions**: Complete GTOC13 scoring implementation
 - **3D Visualization**: Interactive animated visualization of orbits
@@ -119,12 +120,45 @@ loaded = GTOC13Solution.from_file("submission.txt")
 
 See [SOLUTION_FORMAT.md](SOLUTION_FORMAT.md) for detailed documentation on solution models.
 
+### Lambert Solver
+
+Solve trajectory design problems between two bodies:
+
+```python
+from gtoc13 import lambert, lambert_delta_v, YEAR
+
+# Load body orbital elements into a dictionary
+bodies = load_bodies_data(data_dir)
+
+# Solve Lambert's problem for a transfer
+r1, v1, r2, v2, converged = lambert(
+    body1_id=2,           # Departure body
+    body2_id=3,           # Arrival body
+    body1_time=0.0,       # Departure epoch (seconds)
+    body2_time=1.5*YEAR,  # Arrival epoch (seconds)
+    short=True,           # Short way transfer (< 180°)
+    bodies_data=bodies
+)
+
+# Or just get delta-V requirements
+dv_dep, dv_arr, converged = lambert_delta_v(
+    body1_id=2, body2_id=3,
+    body1_time=0.0, body2_time=1.5*YEAR,
+    bodies_data=bodies
+)
+
+print(f"Total ΔV: {dv_dep + dv_arr:.2f} km/s")
+```
+
+See [LAMBERT.md](LAMBERT.md) for detailed Lambert solver documentation.
+
 ## Project Structure
 
 ```
 gtoc13/
 ├── __init__.py           # Main package exports
 ├── jax.py                # Orbital mechanics and scoring functions
+├── lambert.py            # Lambert solver for trajectory design
 ├── solution.py           # Pydantic models for solutions
 ├── anim.py               # 3D visualization
 └── data/                 # Orbital data
@@ -165,6 +199,7 @@ Available physical constants:
 
 See the [examples/](examples/) directory for complete working examples:
 - `solution_example.py`: Creating and writing solution files
+- `lambert_example.py`: Lambert solver for trajectory design
 
 ## Development
 
