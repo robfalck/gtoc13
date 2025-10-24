@@ -2,39 +2,23 @@ import jax
 import jax.numpy as jnp
 from jax import jit
 from diffrax import diffeqsolve, ODETerm, Dopri5, SaveAt, PIDController
-from typing import NamedTuple, Tuple
+from typing import Tuple
 import numpy as np
 
+from .orbital_elements import OrbitalElements
+from .spacecraft_state import SpacecraftState
+
 # Constants
-AU = 149597870.691  # km
+KMPAU = 149597870.691  # km
 MU_ALTAIRA = 139348062043.343  # km^3/s^2
 DAY = 86400.0  # seconds
 YEAR = 365.25 * DAY  # seconds
 
 # Solar sail parameters
 C_FLUX = 5.4026e-6  # N/m^2 at 1 AU
-R0 = 1.0 * AU  # Reference distance (1 AU in km)
+R0 = 1.0 * KMPAU  # Reference distance (1 AU in km)
 SAIL_AREA = 15000.0  # m^2
 SPACECRAFT_MASS = 500.0  # kg
-
-
-class OrbitalElements(NamedTuple):
-    """Orbital elements for a body"""
-    a: float  # semi-major axis (km)
-    e: float  # eccentricity
-    i: float  # inclination (rad)
-    Omega: float  # longitude of ascending node (rad)
-    omega: float  # argument of periapsis (rad)
-    M0: float  # mean anomaly at epoch (rad)
-    mu_body: float  # GM of the body (km^3/s^2)
-    radius: float  # radius of the body (km)
-    weight: float  # scientific weight
-
-
-class SpacecraftState(NamedTuple):
-    """Cartesian state of spacecraft"""
-    r: jnp.ndarray  # position [x, y, z] (km)
-    v: jnp.ndarray  # velocity [vx, vy, vz] (km/s)
 
 
 @jit
@@ -364,7 +348,7 @@ if __name__ == "__main__":
     
     # Example: Create orbital elements for a planet
     example_planet = OrbitalElements(
-        a=13.0 * AU,
+        a=13.0 * KMPAU,
         e=0.05,
         i=jnp.deg2rad(2.0),
         Omega=jnp.deg2rad(45.0),
@@ -378,11 +362,11 @@ if __name__ == "__main__":
     # Convert to Cartesian at t=0
     state = elements_to_cartesian(example_planet, 0.0)
     print(f"\nExample planet state at t=0:")
-    print(f"Position (AU): {state.r / AU}")
+    print(f"Position (AU): {state.r / KMPAU}")
     print(f"Velocity (km/s): {state.v}")
     
     # Test solar sail acceleration
-    r_test = jnp.array([13.0 * AU, 0.0, 0.0])
+    r_test = jnp.array([13.0 * KMPAU, 0.0, 0.0])
     u_n_test = jnp.array([1.0, 0.0, 0.0])  # Facing sun
     a_sail = solar_sail_acceleration(r_test, u_n_test)
     print(f"\nSolar sail acceleration at 13 AU (mm/s²): {jnp.linalg.norm(a_sail) * 1e6}")

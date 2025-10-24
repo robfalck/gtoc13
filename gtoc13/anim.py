@@ -5,76 +5,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D
-import csv
 from pathlib import Path
 import jax.numpy as jnp
 
-from gtoc13 import OrbitalElements, elements_to_cartesian, AU, MU_ALTAIRA
-
-
-def load_planets(filepath: str) -> list[OrbitalElements]:
-    """Load planet data from CSV file"""
-    planets = []
-    with open(filepath, 'r', encoding='latin-1') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            # Handle the # prefix in the first column name
-            planet_id_key = '#Planet ID' if '#Planet ID' in row else 'Planet ID'
-
-            # Convert degrees to radians
-            elements = OrbitalElements(
-                a=float(row['Semi-Major Axis (km)']),
-                e=float(row['Eccentricity ()']),
-                i=np.deg2rad(float(row['Inclination (deg)'])),
-                Omega=np.deg2rad(float(row['Longitude of the Ascending Node (deg)'])),
-                omega=np.deg2rad(float(row['Argument of Periapsis (deg)'])),
-                M0=np.deg2rad(float(row['Mean Anomaly at t=0 (deg)'])),
-                mu_body=float(row['GM (km3/s2)']),
-                radius=float(row['Radius (km)']),
-                weight=float(row['Weight ()'])
-            )
-            planets.append({
-                'id': row[planet_id_key],
-                'name': row['Name'],
-                'elements': elements
-            })
-    return planets
-
-
-def load_small_bodies(filepath: str, id_prefix: str) -> list[OrbitalElements]:
-    """Load asteroid or comet data from CSV file"""
-    bodies = []
-    with open(filepath, 'r', encoding='latin-1') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            # Handle the # prefix in the first column name (with or without space)
-            id_key_options = [f'#{id_prefix} ID', f'# {id_prefix} ID', f'{id_prefix} ID']
-            id_key = next((key for key in id_key_options if key in row), None)
-
-            if id_key is None:
-                raise KeyError(f"Could not find ID column. Available columns: {list(row.keys())}")
-
-            # Convert degrees to radians
-            # Handle different column names for Mean Anomaly
-            m0_key = 'Mean Anomaly at t=0 (deg)' if 'Mean Anomaly at t=0 (deg)' in row else 'Mean Anomaly at t=0'
-
-            elements = OrbitalElements(
-                a=float(row['Semi-Major Axis (km)']),
-                e=float(row['Eccentricity ()']),
-                i=np.deg2rad(float(row['Inclination (deg)'])),
-                Omega=np.deg2rad(float(row['Longitude of the Ascending Node (deg)'])),
-                omega=np.deg2rad(float(row['Argument of Periapsis (deg)'])),
-                M0=np.deg2rad(float(row[m0_key])),
-                mu_body=0.0,  # Small bodies have negligible mass
-                radius=0.0,
-                weight=float(row['Weight ()'])
-            )
-            body_id = row[id_key]
-            bodies.append({
-                'id': body_id,
-                'elements': elements
-            })
-    return bodies
+from gtoc13 import (
+    Body,
+    load_bodies_data,
+    OrbitalElements,
+    elements_to_cartesian,
+    AU,
+    MU_ALTAIRA,
+    YEAR,
+    DAY
+)
 
 
 def compute_orbit_points(elements: OrbitalElements, n_points: int = 100) -> np.ndarray:
@@ -95,44 +38,90 @@ def compute_orbit_points(elements: OrbitalElements, n_points: int = 100) -> np.n
     return np.array(positions) / AU
 
 
+def load_solution_trajectory(filepath: str) -> dict:
+    """
+    Load a solution trajectory from a GTOC13 solution file.
+    Returns dict with 'state_points' list and 'max_time'.
+    """
+    state_points = []
+
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            # Skip empty lines and comments
+            if not line or line.startswith('#') or line.startswith('!'):
+                continue
+
+            # Parse data row: body_id flag epoch x y z vx vy vz cx cy cz
+            parts = line.replace(',', ' ').split()
+            if len(parts) != 12:
+                continue
+
+            state_points.append({
+                'body_id': int(float(parts[0])),
+                'flag': int(float(parts[1])),
+                'epoch': float(parts[2]),
+                'position': np.array([float(parts[3]), float(parts[4]), float(parts[5])]),
+                'velocity': np.array([float(parts[6]), float(parts[7]), float(parts[8])]),
+                'control': np.array([float(parts[9]), float(parts[10]), float(parts[11])])
+            })
+
+    max_time = max(pt['epoch'] for pt in state_points) if state_points else 0.0
+
+    return {
+        'state_points': state_points,
+        'max_time': max_time
+    }
+
+
 def create_animation(
-    planets_file: str,
-    asteroids_file: str,
-    comets_file: str,
     duration_years: float = 50.0,
     fps: int = 30,
-    n_orbit_points: int = 200
+    n_orbit_points: int = 100,
+    solution_file: str = None
 ):
     """
     Create an animated 3D visualization of the solar system.
 
     Args:
-        planets_file: Path to planets CSV
-        asteroids_file: Path to asteroids CSV
-        comets_file: Path to comets CSV
         duration_years: Duration of animation in years
         fps: Frames per second
         n_orbit_points: Number of points to plot for each orbit
+        solution_file: Optional path to solution trajectory file
     """
     print("Loading orbital data...")
-    planets = load_planets(planets_file)
-    asteroids = load_small_bodies(asteroids_file, 'Asteroid')
-    comets = load_small_bodies(comets_file, 'Comet')
+    bodies = load_bodies_data()
+
+    # Separate bodies by type
+    planets = [b for b in bodies.values() if b.is_planet()]
+    small_bodies = [b for b in bodies.values() if b.is_small_body()]
+
+    # Further separate small bodies into asteroids and comets
+    # Asteroids: IDs 1001-1100, Comets: IDs 2001-2200
+    asteroids = [b for b in small_bodies if 1001 <= b.id <= 1100]
+    comets = [b for b in small_bodies if 2001 <= b.id <= 2200]
 
     print(f"Loaded {len(planets)} planets, {len(asteroids)} asteroids, {len(comets)} comets")
 
+    # Load solution trajectory if provided
+    solution_data = None
+    if solution_file:
+        solution_data = load_solution_trajectory(solution_file)
+        print(f"Loaded solution with {len(solution_data['state_points'])} state points")
+        print(f"Solution trajectory ends at t={solution_data['max_time'] / YEAR:.2f} years")
+
     # Compute orbit paths (static)
     print("Computing orbit paths...")
-    planet_orbits = [compute_orbit_points(p['elements'], n_orbit_points) for p in planets]
-    asteroid_orbits = [compute_orbit_points(a['elements'], n_orbit_points) for a in asteroids]
-    comet_orbits = [compute_orbit_points(c['elements'], n_orbit_points) for c in comets]
+    planet_orbits = [compute_orbit_points(p.elements, n_orbit_points) for p in planets]
+    asteroid_orbits = [compute_orbit_points(a.elements, n_orbit_points) for a in asteroids]
+    comet_orbits = [compute_orbit_points(c.elements, n_orbit_points * 10) for c in comets]
 
     # Setup figure
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
 
     # Set up the plot limits
-    max_dist = max([np.max(np.abs(orbit)) for orbit in planet_orbits]) * 1.1
+    max_dist = max([np.max(np.abs(orbit)) for orbit in planet_orbits]) * 1.25
     initial_max_dist = max_dist
     ax.set_xlim([-max_dist, max_dist])
     ax.set_ylim([-max_dist, max_dist])
@@ -180,18 +169,39 @@ def create_animation(
     # Plot orbit paths (static)
     print("Plotting orbit paths...")
     for orbit in planet_orbits:
-        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'b-', alpha=0.3, linewidth=1)
+        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'b-', alpha=0.6, linewidth=1)
 
     for orbit in asteroid_orbits:
-        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'g-', alpha=0.1, linewidth=0.5)
+        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'g-', alpha=0.6, linewidth=0.5)
 
     for orbit in comet_orbits:
-        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'r-', alpha=0.1, linewidth=0.5)
+        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'r-', alpha=0.6, linewidth=0.5)
+        print(orbit.shape)
+
+    # Plot solution trajectory if provided
+    solution_line = None
+    if solution_data:
+        # Plot the full trajectory path (static)
+        positions = np.array([pt['position'] / AU for pt in solution_data['state_points']])
+        ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
+                'c-', alpha=0.8, linewidth=2, label='Solution Trajectory')
 
     # Create scatter plots for moving bodies
     planet_scatter = ax.scatter([], [], [], c='blue', s=50, marker='o', label='Planets')
-    asteroid_scatter = ax.scatter([], [], [], c='green', s=10, marker='.', label='Asteroids', alpha=0.6)
-    comet_scatter = ax.scatter([], [], [], c='red', s=20, marker='^', label='Comets', alpha=0.6)
+    asteroid_scatter = ax.scatter([], [], [], c='green', s=10, marker='.', label='Asteroids', alpha=1.0)
+    comet_scatter = ax.scatter([], [], [], c='red', s=20, marker='^', label='Comets', alpha=1.0)
+
+    # Create scatter plot for spacecraft if solution is loaded
+    spacecraft_scatter = None
+    if solution_data:
+        spacecraft_scatter = ax.scatter([], [], [], c='cyan', s=100, marker='*', label='Spacecraft')
+
+    # Create text labels for planets
+    planet_labels = []
+    for p in planets:
+        label = ax.text(0, 0, 0, p.name, fontsize=10, color='blue',
+                       ha='left', va='bottom', rotation=0)
+        planet_labels.append(label)
 
     ax.legend(loc='upper right')
 
@@ -201,7 +211,6 @@ def create_animation(
                          bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
     # Animation parameters
-    from gtoc13 import YEAR, DAY
     total_time = duration_years * YEAR  # seconds
     n_frames = int(duration_years * fps)
     times = np.linspace(0, total_time, n_frames)
@@ -238,10 +247,18 @@ def create_animation(
         planet_scatter._offsets3d = ([], [], [])
         asteroid_scatter._offsets3d = ([], [], [])
         comet_scatter._offsets3d = ([], [], [])
+        if spacecraft_scatter:
+            spacecraft_scatter._offsets3d = ([], [], [])
         time_text.set_text('')
         time_rate_state['current_time'] = 0.0
         time_rate_state['last_frame'] = 0
-        return planet_scatter, asteroid_scatter, comet_scatter, time_text
+        for label in planet_labels:
+            label.set_position((0, 0))
+            label.set_3d_properties(0)
+        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text] + planet_labels
+        if spacecraft_scatter:
+            artists.append(spacecraft_scatter)
+        return artists
 
     def update(frame):
         """Update animation frame"""
@@ -261,21 +278,21 @@ def create_animation(
         # Compute planet positions
         planet_pos = []
         for p in planets:
-            state = elements_to_cartesian(p['elements'], float(t))
+            state = elements_to_cartesian(p.elements, float(t))
             planet_pos.append(np.array(state.r) / AU)
         planet_pos = np.array(planet_pos)
 
         # Compute asteroid positions
         asteroid_pos = []
         for a in asteroids:
-            state = elements_to_cartesian(a['elements'], float(t))
+            state = elements_to_cartesian(a.elements, float(t))
             asteroid_pos.append(np.array(state.r) / AU)
         asteroid_pos = np.array(asteroid_pos)
 
         # Compute comet positions
         comet_pos = []
         for c in comets:
-            state = elements_to_cartesian(c['elements'], float(t))
+            state = elements_to_cartesian(c.elements, float(t))
             comet_pos.append(np.array(state.r) / AU)
         comet_pos = np.array(comet_pos)
 
@@ -283,6 +300,48 @@ def create_animation(
         planet_scatter._offsets3d = (planet_pos[:, 0], planet_pos[:, 1], planet_pos[:, 2])
         asteroid_scatter._offsets3d = (asteroid_pos[:, 0], asteroid_pos[:, 1], asteroid_pos[:, 2])
         comet_scatter._offsets3d = (comet_pos[:, 0], comet_pos[:, 1], comet_pos[:, 2])
+
+        # Update planet labels to follow planets
+        for i, label in enumerate(planet_labels):
+            x, y, z = planet_pos[i]
+            label.set_position((x, y))
+            label.set_3d_properties(z, zdir='z')
+
+        # Update spacecraft position if solution is loaded
+        if spacecraft_scatter and solution_data:
+            # Find spacecraft position at current time
+            state_points = solution_data['state_points']
+            max_solution_time = solution_data['max_time']
+
+            if t <= max_solution_time:
+                # Interpolate position between state points
+                # Find the two state points that bracket current time
+                for i in range(len(state_points) - 1):
+                    if state_points[i]['epoch'] <= t <= state_points[i + 1]['epoch']:
+                        # Linear interpolation
+                        t0 = state_points[i]['epoch']
+                        t1 = state_points[i + 1]['epoch']
+                        p0 = state_points[i]['position']
+                        p1 = state_points[i + 1]['position']
+
+                        if t1 > t0:
+                            alpha = (t - t0) / (t1 - t0)
+                            sc_pos = p0 + alpha * (p1 - p0)
+                        else:
+                            sc_pos = p0
+
+                        sc_pos_au = sc_pos / AU
+                        spacecraft_scatter._offsets3d = ([sc_pos_au[0]], [sc_pos_au[1]], [sc_pos_au[2]])
+                        break
+                else:
+                    # If t is before first state point or at exact match
+                    if t <= state_points[0]['epoch']:
+                        sc_pos_au = state_points[0]['position'] / AU
+                        spacecraft_scatter._offsets3d = ([sc_pos_au[0]], [sc_pos_au[1]], [sc_pos_au[2]])
+            else:
+                # Keep spacecraft at final position after trajectory ends
+                final_pos = state_points[-1]['position'] / AU
+                spacecraft_scatter._offsets3d = ([final_pos[0]], [final_pos[1]], [final_pos[2]])
 
         # Update title with current time
         ax.set_title(f'GTOC13 Solar System')
@@ -298,7 +357,10 @@ def create_animation(
             f'Rate:  {rate:.2f}x'
         )
 
-        return planet_scatter, asteroid_scatter, comet_scatter, time_text
+        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text] + planet_labels
+        if spacecraft_scatter:
+            artists.append(spacecraft_scatter)
+        return artists
 
     print(f"Creating animation with {n_frames} frames...")
     anim = FuncAnimation(
@@ -315,21 +377,20 @@ def create_animation(
 
 def main():
     """Main function to create and display animation"""
-    # Get data directory
-    data_dir = Path(__file__).parent / 'data'
+    import sys
 
-    planets_file = data_dir / 'gtoc13_planets.csv'
-    asteroids_file = data_dir / 'gtoc13_asteroids.csv'
-    comets_file = data_dir / 'gtoc13_comets.csv'
+    # Check for solution file argument
+    solution_file = None
+    if len(sys.argv) > 1:
+        solution_file = sys.argv[1]
+        print(f"Loading solution from: {solution_file}")
 
     # Create animation
     fig, anim = create_animation(
-        str(planets_file),
-        str(asteroids_file),
-        str(comets_file),
-        duration_years=50.0,  # Animate 50 years
+        duration_years=200.0,  # Animate 200 years
         fps=30,
-        n_orbit_points=200
+        n_orbit_points=100,
+        solution_file=solution_file
     )
 
     # Save or show animation

@@ -1,6 +1,9 @@
-from .jax import (
+from .orbital_elements import OrbitalElements
+from .spacecraft_state import SpacecraftState
+
+from .astrodynamics import (
     # Constants
-    AU,
+    KMPAU,
     MU_ALTAIRA,
     DAY,
     YEAR,
@@ -8,10 +11,6 @@ from .jax import (
     R0,
     SAIL_AREA,
     SPACECRAFT_MASS,
-
-    # Named tuples
-    OrbitalElements,
-    SpacecraftState,
 
     # Functions
     solve_kepler,
@@ -41,9 +40,28 @@ from .solution import (
     create_propagated,
 )
 
+from .lambert import (
+    # Lambert solver
+    lambert,
+    lambert_universal_variables,
+    lambert_delta_v,
+    get_body_state,
+)
+
+from .bodies import (
+    # Body class
+    Body,
+    load_bodies_data,
+    bodies_data
+)
+
+# Alias for compatibility with existing code
+AU = KMPAU
+
 __all__ = [
     # Constants
     "AU",
+    "KMPAU",
     "MU_ALTAIRA",
     "DAY",
     "YEAR",
@@ -80,4 +98,15 @@ __all__ = [
     "create_flyby",
     "create_conic",
     "create_propagated",
+
+    # Lambert solver
+    "lambert",
+    "lambert_universal_variables",
+    "lambert_delta_v",
+    "get_body_state",
+
+    # Bodies
+    "Body",
+    "load_bodies_data",
+    "bodies_data"
 ]
