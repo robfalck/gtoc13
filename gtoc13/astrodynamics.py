@@ -6,7 +6,7 @@ from typing import Tuple
 import numpy as np
 
 from .orbital_elements import OrbitalElements
-from .spacecraft_state import SpacecraftState
+from .cartesian_state import CartesianState
 
 # Constants
 KMPAU = 149597870.691  # km
@@ -47,7 +47,7 @@ def solve_kepler(M: float, e: float, tol: float = 1e-10, max_iter: int = 50) -> 
 
 
 @jit
-def elements_to_cartesian(elements: OrbitalElements, t: float) -> SpacecraftState:
+def elements_to_cartesian(elements: OrbitalElements, t: float) -> CartesianState:
     """
     Convert orbital elements to Cartesian state at time t.
     t is time since epoch in seconds.
@@ -99,7 +99,7 @@ def elements_to_cartesian(elements: OrbitalElements, t: float) -> SpacecraftStat
     vy = v_mag * (-sin_theta_omega_gamma * sin_Omega + cos_theta_omega_gamma * cos_i * cos_Omega)
     vz = v_mag * cos_theta_omega_gamma * sin_i
     
-    return SpacecraftState(r=jnp.array([x, y, z]), v=jnp.array([vx, vy, vz]))
+    return CartesianState(r=jnp.array([x, y, z]), v=jnp.array([vx, vy, vz]))
 
 
 @jit

@@ -1,5 +1,5 @@
 from .orbital_elements import OrbitalElements
-from .spacecraft_state import SpacecraftState
+from .cartesian_state import CartesianState
 
 from .astrodynamics import (
     # Constants
@@ -72,7 +72,7 @@ __all__ = [
 
     # Named tuples
     "OrbitalElements",
-    "SpacecraftState",
+    "CartesianState",
 
     # Functions
     "solve_kepler",

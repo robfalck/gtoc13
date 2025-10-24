@@ -176,7 +176,6 @@ def create_animation(
 
     for orbit in comet_orbits:
         ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'r-', alpha=0.6, linewidth=0.5)
-        print(orbit.shape)
 
     # Plot solution trajectory if provided
     solution_line = None
