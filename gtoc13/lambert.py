@@ -108,6 +108,133 @@ def stumpff_s(z: float) -> float:
 
 
 @jit
+def lambert_tof(
+    z: float,
+    r1: jnp.ndarray,
+    r2: jnp.ndarray,
+    dt: float,
+    mu: float,
+    short: bool = True
+) -> Tuple[float, float, float]:
+    """
+    Compute the Lambert problem time of flight for a given value of the universal variable z.
+
+    This function is designed for use with external solvers (e.g., OpenMDAO) that will
+    iterate on z to drive the residual to zero.
+
+    The function uses a smooth softplus activation to ensure y > 0, making the residual
+    continuously differentiable. This enables gradient-based optimization methods.
+
+    Args:
+        z: Universal variable (to be solved for)
+        r1: Initial position vector (km)
+        r2: Final position vector (km)
+        dt: Desired time of flight (seconds)
+        mu: Gravitational parameter (km^3/s^2)
+        short: True for short way (< 180°), False for long way
+
+    Returns:
+        tof:
+            time of flight, in whatever time units are compatible with
+            mu, r1, and r2. These could be km**3/s**2 or DU**3/TU**2, for instance.
+        A:
+            the intermediate A variable of the lambert iteration.
+        y:
+            the intermediate y varaible of the lambert iteration.
+            
+    Usage with OpenMDAO:
+        The solver should iterate on z to drive residual → 0.
+        Once converged, v1 and v2 are the Lambert solution velocities.
+
+    Notes:
+        - The softplus activation ensures continuous gradients for optimization
+        - JAX autodiff can be used to compute exact derivatives: jax.grad(residual_func)
+        - For physically valid solutions, y should be naturally positive
+    """
+    # Magnitudes
+    r1_mag = jnp.linalg.norm(r1)
+    r2_mag = jnp.linalg.norm(r2)
+
+    # Cosine of transfer angle
+    cos_dnu = jnp.dot(r1, r2) / (r1_mag * r2_mag)
+    cos_dnu = jnp.clip(cos_dnu, -1.0, 1.0)
+
+    # Determine A parameter based on transfer direction
+    def get_A_short():
+        return jnp.sqrt(r1_mag * r2_mag * (1.0 + cos_dnu))
+
+    def get_A_long():
+        return -jnp.sqrt(r1_mag * r2_mag * (1.0 + cos_dnu))
+
+    A = jax.lax.cond(short, get_A_short, get_A_long)
+
+    # Compute Stumpff functions
+    C_z = stumpff_c(z)
+    S_z = stumpff_s(z)
+
+    # Compute y(z)
+    y_raw = r1_mag + r2_mag + A * (z * S_z - 1.0) / jnp.sqrt(C_z)
+
+    # Use smooth activation to keep y positive with continuous derivatives
+    # softplus(x) = log(1 + exp(x)) ensures y > 0 and is infinitely differentiable
+    # Add small constant to avoid y = 0
+    y = jnp.logaddexp(0.0, y_raw) + 1e-10  # softplus activation
+
+    # Compute X(z)
+    X = jnp.sqrt(y / C_z)
+
+    # Compute time of flight for this z
+    t = (X**3 * S_z + A * jnp.sqrt(y)) / jnp.sqrt(mu)
+
+    return t, A, y
+
+
+def lambert_v(
+    A: float,
+    y: float,
+    r1: jnp.ndarray,
+    r2: jnp.ndarray,
+    mu: float,
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Compute the Lambert problem time of flight for a given value of the universal variable z.
+
+    This function is designed for use with external solvers (e.g., OpenMDAO) that will
+    iterate on z to drive the residual to zero.
+
+    The function uses a smooth softplus activation to ensure y > 0, making the residual
+    continuously differentiable. This enables gradient-based optimization methods.
+
+    Args:
+        z: Universal variable (to be solved for)
+        r1: Initial position vector (km)
+        r2: Final position vector (km)
+        dt: Desired time of flight (seconds)
+        mu: Gravitational parameter (km^3/s^2)
+        short: True for short way (< 180°), False for long way
+
+    Returns:
+        v1:
+            cartesian velocity vector at the initial position.
+        v2:
+            cartesian velocity vector at the final position.
+    """
+    # Magnitudes
+    r1_mag = jnp.linalg.norm(r1)
+    r2_mag = jnp.linalg.norm(r2)
+
+    # Compute velocities using Lagrange coefficients
+    f = 1.0 - y / r1_mag
+    g = A * jnp.sqrt(y / mu)
+    gdot = 1.0 - y / r2_mag
+
+    v1 = (r2 - f * r1) / g
+    v2 = (gdot * r2 - r1) / g
+
+    return v1, v2
+
+
+@jit
 def lambert_universal_variables(
     r1: jnp.ndarray,
     r2: jnp.ndarray,
@@ -200,38 +327,37 @@ def lambert_universal_variables(
 
             dtdz = compute_dtdz()
 
-            # Newton step with Armijo-Goldstein linesearch
+            # Damped Newton step with adaptive damping
             dtdz_safe = jnp.where(jnp.abs(dtdz) < 1e-10, 1e-10, dtdz)
-            direction = -(t - dt) / dtdz_safe  # Newton direction
+            z_newton = z - (t - dt) / dtdz_safe  # Full Newton step
 
-            # Armijo linesearch parameters
-            alpha = 1.0  # Initial step size
-            c1 = 1e-4  # Armijo condition parameter
-            current_error = jnp.abs(t - dt)
+            # Compute what y would be at the full Newton step
+            C_z_newton = stumpff_c(z_newton)
+            S_z_newton = stumpff_s(z_newton)
+            y_newton = r1_mag + r2_mag + A * (z_newton * S_z_newton - 1.0) / jnp.sqrt(C_z_newton)
 
-            # Try full Newton step first
-            z_trial = z + alpha * direction
+            # Choose damping factor based on whether y would go negative
+            # If y_newton > 0, try full step; otherwise use smaller damping
+            def full_step():
+                return z_newton
 
-            # Ensure y remains positive
-            C_z_trial = stumpff_c(z_trial)
-            S_z_trial = stumpff_s(z_trial)
-            y_trial = r1_mag + r2_mag + A * (z_trial * S_z_trial - 1.0) / jnp.sqrt(C_z_trial)
+            def damped_step():
+                # Use damping factor of 0.7 to prevent oscillation
+                return z + 0.7 * (z_newton - z)
 
-            # If y <= 0 or step is too large, backtrack
-            needs_backtrack = (y_trial <= 0) | (jnp.abs(direction) > 0.5)
+            def heavy_damped_step():
+                # Very small step if y would go very negative
+                return z + 0.3 * (z_newton - z)
 
-            # Backtracking: reduce alpha until we get a valid step
-            alpha = jnp.where(needs_backtrack, 0.5, alpha)
-            z_trial = z + alpha * direction
-
-            C_z_trial = stumpff_c(z_trial)
-            S_z_trial = stumpff_s(z_trial)
-            y_trial = r1_mag + r2_mag + A * (z_trial * S_z_trial - 1.0) / jnp.sqrt(C_z_trial)
-            y_trial = jnp.where(jnp.abs(y_trial) < 1e-10, 1e-10, y_trial)
-
-            # If still invalid, use even smaller step
-            alpha = jnp.where((y_trial <= 0) & needs_backtrack, 0.1, alpha)
-            z_new = z + alpha * direction
+            z_new = jax.lax.cond(
+                y_newton > y * 0.1,  # If y doesn't drop too much
+                full_step,
+                lambda: jax.lax.cond(
+                    y_newton > 0,
+                    damped_step,
+                    heavy_damped_step
+                )
+            )
 
             return (z_new, i + 1)
 
@@ -245,7 +371,9 @@ def lambert_universal_variables(
             X = jnp.sqrt(y / C_z)
             t = (X**3 * S_z + A * jnp.sqrt(y)) / jnp.sqrt(mu)
 
-            return (jnp.abs(t - dt) > eps) & (i < max_iter)
+            # Use relative tolerance: |t - dt| / dt > eps
+            relative_error = jnp.abs(t - dt) / dt
+            return (relative_error > eps) & (i < max_iter)
 
         z_final, iter_count = jax.lax.while_loop(cond_fn, body_fn, (z_init, 0))
 

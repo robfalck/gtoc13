@@ -44,6 +44,7 @@ from .lambert import (
     # Lambert solver
     lambert,
     lambert_universal_variables,
+    lambert_tof,
     lambert_delta_v,
     get_body_state,
 )
@@ -102,6 +103,7 @@ __all__ = [
     # Lambert solver
     "lambert",
     "lambert_universal_variables",
+    "lambert_tof",
     "lambert_delta_v",
     "get_body_state",
 
