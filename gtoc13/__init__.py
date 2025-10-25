@@ -4,6 +4,9 @@ from .cartesian_state import CartesianState
 from .astrodynamics import (
     # Constants
     KMPAU,
+    KMPDU,
+    SPTU,
+    YPTU,
     MU_ALTAIRA,
     DAY,
     YEAR,
@@ -44,6 +47,8 @@ from .lambert import (
     # Lambert solver
     lambert,
     lambert_universal_variables,
+    lambert_tof,
+    lambert_v,
     lambert_delta_v,
     get_body_state,
 )
@@ -102,6 +107,11 @@ __all__ = [
     # Lambert solver
     "lambert",
     "lambert_universal_variables",
+    "lambert_residual",
+    "lambert_tof",
+    "lambert_v",
+    "lambert_tof_vmap",
+    "lambert_v_vmap",
     "lambert_delta_v",
     "get_body_state",
 
