@@ -14,6 +14,10 @@ MU_ALTAIRA = 139348062043.343  # km^3/s^2
 DAY = 86400.0  # seconds
 YEAR = 365.25 * DAY  # seconds
 
+KMPDU = KMPAU  # 1 AU in km
+SPTU = jnp.sqrt(KMPDU**3 / MU_ALTAIRA)  # Time unit in seconds
+YPTU = SPTU / YEAR
+
 # Solar sail parameters
 C_FLUX = 5.4026e-6  # N/m^2 at 1 AU
 R0 = 1.0 * KMPAU  # Reference distance (1 AU in km)

@@ -1,112 +1,136 @@
 import jax.numpy as jnp
+import numpy as np
+from functools import partial
 from pathlib import Path
+from scipy.optimize import brentq
 
-from gtoc13 import KMPAU, bodies_data, lambert_universal_variables, MU_ALTAIRA, YEAR
-
-# Canonical units: mu = 1.0
-# Distance Unit (DU) = 1 AU = KMPAU km
-# Time Unit (TU) chosen so that mu_canonical = 1.0
-# mu = r^3 / t^2, so TU = sqrt(DU^3 / mu)
-DU = KMPAU  # 1 AU in km
-TU = jnp.sqrt(DU**3 / MU_ALTAIRA)  # Time unit in seconds
-
-print(f"Canonical units:")
-print(f"  1 DU = {DU:.6e} km = 1 AU")
-print(f"  1 TU = {TU:.6e} seconds = {TU/YEAR:.6f} years")
-print(f"  mu_canonical = 1.0 DU^3/TU^2")
-print()
-
-# Problem setup in physical units
-t0_phys = 0.0
-tf_phys = 10.0 * YEAR  # 5 years in seconds
-r0_phys = jnp.array([-200.0, 50.0, 0.0]) * KMPAU  # km
-rf_phys = bodies_data[10].get_state(tf_phys).r  # km
-target_body_id = 10  # Planet X
-
-print(f"Problem setup:")
-print(f"  Initial position: r0 = [-200, 50, 0] AU")
-print(f"  Target: Planet X (ID={target_body_id})")
-print(f"  Transfer time: {tf_phys / YEAR:.2f} years")
-print()
-
-# Convert to canonical units
-t0_canon = t0_phys / TU
-tf_canon = tf_phys / TU
-dt_canon = tf_canon - t0_canon
-r0_canon = r0_phys / DU
-rf_canon = rf_phys / DU
-mu_canon = 1.0
-
-# Solve Lambert's problem in canonical units
-v0_canon, vf_canon, converged = lambert_universal_variables(
-    r0_canon, rf_canon, dt=dt_canon, mu=mu_canon
+from gtoc13 import (
+    KMPDU, SPTU, YPTU, YEAR,
+    bodies_data, lambert_tof, lambert_v,
+    GTOC13Solution, create_conic
 )
 
-# Convert back to physical units
-v0_phys = v0_canon * (DU / TU)  # km/s
-vf_phys = vf_canon * (DU / TU)  # km/s
-
-print(f"Lambert solution:")
-print(f"  converged = {converged}")
-# print(f"  iterations = {iter_count}")
-print(f"  v0 = [{v0_phys[0]:.6f}, {v0_phys[1]:.6f}, {v0_phys[2]:.6f}] km/s")
-print(f"  |v0| = {jnp.linalg.norm(v0_phys):.4f} km/s")
-print(f"  |vf| = {jnp.linalg.norm(vf_phys):.4f} km/s")
+print("Solving Lambert's problem for multiple target times")
+print("=" * 70)
 print()
 
-# Create solution file in GTOC13 format
-# Format: body_id flag epoch x y z vx vy vz cx cy cz
-# Units: epoch(s), position(km), velocity(km/s), control(km/s²)
+# Problem setup
+r0 = jnp.array([-200.0, 50.0, 0.0]) # in DU
+planet_x_id = 10  # Planet X
 
-solution_dir = Path(__file__).parent.parent / "solutions"
-solution_dir.mkdir(exist_ok=True)
-solution_file = solution_dir / "solution0.txt"
+# Target times of flight (years)
+dt_target = 5.0
+dt_target_TU = dt_target / YPTU
 
-# Create solution content
-with open(solution_file, 'w') as f:
-    # Write header
-    f.write("# GTOC13 Solution File\n")
-    f.write("# Format: body_id flag epoch x y z vx vy vz cx cy cz\n")
-    f.write("# Units: epoch(s), position(km), velocity(km/s), control(km/s²)\n")
-    f.write("#\n")
-    f.write("# Solution 0: Single Lambert arc\n")
-    f.write(f"# Departure: r0 = [-200, 50, 0] AU at t=0\n")
-    f.write(f"# Arrival: Planet X (ID={target_body_id}) at t={tf_phys/YEAR:.2f} years\n")
-    f.write(f"# Transfer type: Conic arc (ballistic Lambert transfer)\n")
-    f.write(f"# Converged: {converged}\n")
-    f.write(f"# Delta-V: {jnp.linalg.norm(v0_phys):.4f} km/s\n")
-    f.write("#\n")
-
-    # Write departure point (initial state)
-    # body_id=0 (no flyby), flag=0 (conic arc)
-    # Control acceleration = 0 for ballistic arc
-    f.write(f"0 0 {t0_phys:.12f} "
-            f"{r0_phys[0]:.12f} {r0_phys[1]:.12f} {r0_phys[2]:.12f} "
-            f"{v0_phys[0]:.12f} {v0_phys[1]:.12f} {v0_phys[2]:.12f} "
-            f"0.000000000000 0.000000000000 0.000000000000\n")
-
-    # Write arrival point (final state)
-    # body_id=target, flag=0 (conic arc)
-    f.write(f"{target_body_id} 0 {tf_phys:.12f} "
-            f"{rf_phys[0]:.12f} {rf_phys[1]:.12f} {rf_phys[2]:.12f} "
-            f"{vf_phys[0]:.12f} {vf_phys[1]:.12f} {vf_phys[2]:.12f} "
-            f"0.000000000000 0.000000000000 0.000000000000\n")
-
-print(f"Solution saved to: {solution_file}")
-print(f"  2 trajectory points written (departure and arrival)")
+print(f"Initial position: r0 = [-200, 50, 0] AU")
+print(f"Target: Planet X (ID={planet_x_id})")
+print(f"Target transfer times: {dt_target} years")
 print()
 
-# Verify the position at arrival matches Planet X
-planet_x_state = bodies_data[10].get_state(tf_phys)
-position_error = jnp.linalg.norm(rf_phys - planet_x_state.r)
-velocity_error = jnp.linalg.norm(vf_phys - planet_x_state.v)
+# Define residual function for a single Lambert problem
+def residual_fn(z, args):
+    """
+    Residual function: difference between computed TOF and target TOF.
 
-print(f"Verification:")
-print(f"  Position delta at arrival: {position_error/1e3:.6f} thousand km")
-print(f"  Velocity delta at arrival: {velocity_error:.6f} km/s")
-print()
+    Args:
+        z: Universal variable
+        args: (r0, rf, dt_target, mu)
 
-if position_error < 1e3:  # Less than 1000 km error
-    print("✓ Solution verified: spacecraft reaches Planet X position!")
-else:
-    print("⚠ Warning: Large position error at arrival")
+    Returns:
+        Scalar residual: t_computed - dt_target
+    """
+    r0, rf, dt_target, mu = args
+    t, A, y = lambert_tof(z, r0, rf, mu)
+    return t - dt_target
+
+
+rf = bodies_data[planet_x_id].get_state(dt_target).r / KMPDU
+print(residual_fn(-0.3, (r0, rf, dt_target_TU, 1.0)))
+print(residual_fn(-0.25, (r0, rf, dt_target_TU, 1.0)))
+
+# solver = optx.Newton(rtol=1e-8, atol=1e-8)
+
+# # Solve with bounded bisection
+# solution = optx.root_find(
+#     residual_fn,
+#     solver,
+#     y0=-0.265,
+#     args=(r0, rf, dt_target_TU, 1.0),
+#     max_steps=10000
+# )
+
+# Scipy Brent solver using functools.partial
+print("\nSolving with scipy.optimize.brentq:")
+print("-" * 70)
+
+# Create partial function with fixed args
+residual_partial = partial(residual_fn, args=(r0, rf, dt_target_TU, 1.0))
+
+# Solve using Brent's method (robust hybrid root-finding)
+z_solution = brentq(residual_partial, -0.3, -0.25, xtol=1e-10, rtol=1e-10)
+print(f"Solution: z = {z_solution}")
+
+# Verify the solution
+residual_value = residual_partial(z_solution)
+print(f"Residual at solution: {residual_value:.2e}")
+
+# Compute the velocities
+t, A, y = lambert_tof(z_solution, r0, rf, 1.0)
+v1, v2 = lambert_v(A, y, r0, rf, 1.0)
+print(f"\nTransfer time: {float(t) * YPTU:.4f} years (target: {dt_target} years)")
+print(f"Initial velocity: v1 = {np.array(v1)} DU/TU")
+print(f"Final velocity: v2 = {np.array(v2)} DU/TU")
+
+# Create GTOCSolution and save to file
+print("\nCreating GTOC13 solution...")
+print("-" * 70)
+
+# Convert positions and velocities from DU/TU to km and km/s
+r0_km = np.array(r0) * KMPDU  # DU to km
+rf_km = np.array(rf) * KMPDU  # DU to km
+v1_km_s = np.array(v1) * KMPDU / SPTU  # DU/TU to km/s
+v2_km_s = np.array(v2) * KMPDU / SPTU  # DU/TU to km/s
+
+# Time in seconds
+epoch_start = 0.0
+epoch_end = dt_target * YEAR  # years to seconds
+
+print(f"Start epoch: {epoch_start} s (t = 0 years)")
+print(f"End epoch: {epoch_end} s (t = {dt_target} years)")
+print(f"Start position: {r0_km} km")
+print(f"End position: {rf_km} km")
+print(f"Start velocity: {v1_km_s} km/s")
+print(f"End velocity: {v2_km_s} km/s")
+
+# Create a conic arc
+arc = create_conic(
+    epoch_start=epoch_start,
+    epoch_end=epoch_end,
+    position_start=tuple(r0_km),
+    position_end=tuple(rf_km),
+    velocity_start=tuple(v1_km_s),
+    velocity_end=tuple(v2_km_s)
+)
+
+# Create solution
+solution = GTOC13Solution(
+    arcs=[arc],
+    comments=[
+        "Solution 0: Single Lambert transfer to Planet X",
+        f"Departure: r0 = [-200, 50, 0] DU at t=0",
+        f"Arrival: Planet X (ID={planet_x_id}) at t={dt_target} years",
+        f"Transfer type: Conic arc (Lambert ballistic)",
+        f"Universal variable: z = {z_solution}",
+        f"Residual: {residual_value:.2e}"
+    ]
+)
+
+# Save to file
+output_dir = Path(__file__).parent.parent / 'solutions'
+output_dir.mkdir(exist_ok=True)
+output_file = output_dir / 'solution0.txt'
+solution.write_solution_file(output_file, precision=12)
+
+print(f"\nSolution saved to: {output_file}")
+print(f"Number of state points: {len(solution.to_state_points())}")
+

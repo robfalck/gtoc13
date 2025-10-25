@@ -112,9 +112,7 @@ def lambert_tof(
     z: float,
     r1: jnp.ndarray,
     r2: jnp.ndarray,
-    dt: float,
-    mu: float,
-    short: bool = True
+    mu: float
 ) -> Tuple[float, float, float]:
     """
     Compute the Lambert problem time of flight for a given value of the universal variable z.
@@ -129,7 +127,6 @@ def lambert_tof(
         z: Universal variable (to be solved for)
         r1: Initial position vector (km)
         r2: Final position vector (km)
-        dt: Desired time of flight (seconds)
         mu: Gravitational parameter (km^3/s^2)
         short: True for short way (< 180°), False for long way
 
@@ -160,13 +157,14 @@ def lambert_tof(
     cos_dnu = jnp.clip(cos_dnu, -1.0, 1.0)
 
     # Determine A parameter based on transfer direction
-    def get_A_short():
-        return jnp.sqrt(r1_mag * r2_mag * (1.0 + cos_dnu))
+    # def get_A_short():
+    #     return jnp.sqrt(r1_mag * r2_mag * (1.0 + cos_dnu))
 
-    def get_A_long():
-        return -jnp.sqrt(r1_mag * r2_mag * (1.0 + cos_dnu))
+    # def get_A_long():
+    #     return -jnp.sqrt(r1_mag * r2_mag * (1.0 + cos_dnu))
 
-    A = jax.lax.cond(short, get_A_short, get_A_long)
+    # Assume we're taking the short path for GTOC!
+    A = jnp.sqrt(r1_mag * r2_mag * (1.0 + cos_dnu))
 
     # Compute Stumpff functions
     C_z = stumpff_c(z)
@@ -197,21 +195,16 @@ def lambert_v(
     mu: float,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
-    Compute the Lambert problem time of flight for a given value of the universal variable z.
+    Compute the Lambert problem velocities.
 
-    This function is designed for use with external solvers (e.g., OpenMDAO) that will
-    iterate on z to drive the residual to zero.
-
-    The function uses a smooth softplus activation to ensure y > 0, making the residual
-    continuously differentiable. This enables gradient-based optimization methods.
+    This function requires inputs A and y that are computed in lambert_tof.
 
     Args:
-        z: Universal variable (to be solved for)
-        r1: Initial position vector (km)
-        r2: Final position vector (km)
-        dt: Desired time of flight (seconds)
-        mu: Gravitational parameter (km^3/s^2)
-        short: True for short way (< 180°), False for long way
+        A: short or long way indicator from lambert_tof
+        y: y intermediate variable from lambert_tof
+        r1: Initial position vector (DU)
+        r2: Final position vector (DU)
+        mu: Gravitational parameter (DU^3/TU^2)
 
     Returns:
         v1:
@@ -232,7 +225,6 @@ def lambert_v(
     v2 = (gdot * r2 - r1) / g
 
     return v1, v2
-
 
 @jit
 def lambert_universal_variables(
@@ -380,8 +372,12 @@ def lambert_universal_variables(
         # Compute final velocities
         C_z = stumpff_c(z_final)
         S_z = stumpff_s(z_final)
-        y = r1_mag + r2_mag + A * (z_final * S_z - 1.0) / jnp.sqrt(C_z)
-        y = jnp.where(jnp.abs(y) < 1e-10, 1e-10, y)
+        y_raw = r1_mag + r2_mag + A * (z_final * S_z - 1.0) / jnp.sqrt(C_z)
+        # y = jnp.where(jnp.abs(y) < 1e-10, 1e-10, y)
+        # Use smooth activation to keep y positive with continuous derivatives
+        # softplus(x) = log(1 + exp(x)) ensures y > 0 and is infinitely differentiable
+        # Add small constant to avoid y = 0
+        y = jnp.logaddexp(0.0, y_raw) + 1e-10  # softplus activation
 
         # Lagrange coefficients
         f = 1.0 - y / r1_mag
@@ -394,11 +390,11 @@ def lambert_universal_variables(
 
         converged = iter_count < max_iter
 
-        return v1, v2, converged
+        return v1, v2, z_final, converged
 
     def invalid_transfer():
         # Return zero velocities and not converged
-        return jnp.zeros(3), jnp.zeros(3), False
+        return jnp.zeros(3), jnp.zeros(3), jnp.nan, False
 
     # Check if A is valid (not too close to zero)
     return jax.lax.cond(
