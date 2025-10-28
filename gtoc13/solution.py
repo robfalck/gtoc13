@@ -426,3 +426,201 @@ def create_propagated(
     ]
 
     return PropagatedArc(state_points=state_points)
+
+
+class FlybyTarget(BaseModel):
+    """
+    A flyby target specification for mission planning.
+
+    Represents a single flyby in the mission sequence with target body,
+    arrival time, propulsion mode, and science flag.
+    """
+    body_id: int = Field(
+        ...,
+        gt=0,
+        description="Target body ID (must be > 0)"
+    )
+    time_years: float = Field(
+        ...,
+        gt=0,
+        description="Time from mission start (years)"
+    )
+    use_sail: bool = Field(
+        ...,
+        description="Whether to use solar sail for this arc"
+    )
+    do_science: bool = Field(
+        ...,
+        description="Whether this flyby counts as a science flyby"
+    )
+
+
+class MissionPlan(BaseModel):
+    """
+    High-level mission plan specification.
+
+    Represents a mission as an initial state and a sequence of flyby targets.
+    This is a convenient format for specifying missions that can later be
+    analyzed, propagated, and converted to detailed GTOC13Solution format.
+
+    Example:
+        >>> initial_state = {
+        ...     'position': (-200.0, 50.0, 0.0),  # AU
+        ...     'velocity': (2.1, -0.5, -0.24)    # DU/TU
+        ... }
+        >>> flybys = [
+        ...     FlybyTarget(body_id=10, time_years=5.0, use_sail=False, do_science=True),
+        ...     FlybyTarget(body_id=15, time_years=8.5, use_sail=True, do_science=True),
+        ... ]
+        >>> plan = MissionPlan(initial_state=initial_state, flybys=flybys)
+    """
+    initial_state: dict = Field(
+        ...,
+        description="Initial spacecraft state with 'position' and 'velocity' keys"
+    )
+    flybys: List[FlybyTarget] = Field(
+        default_factory=list,
+        description="Sequence of flyby targets"
+    )
+
+    @model_validator(mode='after')
+    def validate_mission_plan(self):
+        # Validate initial_state has required keys
+        if 'position' not in self.initial_state:
+            raise ValueError("initial_state must contain 'position' key")
+        if 'velocity' not in self.initial_state:
+            raise ValueError("initial_state must contain 'velocity' key")
+
+        # Validate position is 3D
+        pos = self.initial_state['position']
+        if len(pos) != 3:
+            raise ValueError("position must be a 3D vector")
+
+        # Validate velocity is 3D
+        vel = self.initial_state['velocity']
+        if len(vel) != 3:
+            raise ValueError("velocity must be a 3D vector")
+
+        # Check that flyby times are monotonically increasing
+        times = [fb.time_years for fb in self.flybys]
+        if len(times) > 1:
+            for i in range(1, len(times)):
+                if times[i] <= times[i-1]:
+                    raise ValueError(
+                        f"Flyby times must be monotonically increasing: "
+                        f"flyby {i} at {times[i]} years is not after flyby {i-1} at {times[i-1]} years"
+                    )
+
+        return self
+
+    def summary(self) -> str:
+        """
+        Generate a human-readable summary of the mission plan.
+
+        Returns:
+            Multi-line string summary
+        """
+        lines = []
+        lines.append("Mission Plan Summary")
+        lines.append("=" * 70)
+
+        # Initial state
+        pos = self.initial_state['position']
+        vel = self.initial_state['velocity']
+        lines.append(f"\nInitial State (t=0):")
+        lines.append(f"  Position: [{pos[0]:>8.3f}, {pos[1]:>8.3f}, {pos[2]:>8.3f}] AU")
+        lines.append(f"  Velocity: [{vel[0]:>8.5f}, {vel[1]:>8.5f}, {vel[2]:>8.5f}] DU/TU")
+
+        # Flybys
+        lines.append(f"\nFlyby Sequence ({len(self.flybys)} flybys):")
+        lines.append("-" * 70)
+
+        if not self.flybys:
+            lines.append("  (no flybys)")
+        else:
+            for i, fb in enumerate(self.flybys, 1):
+                sail_str = "sail" if fb.use_sail else "ballistic"
+                science_str = "SCIENCE" if fb.do_science else "gravity assist"
+                lines.append(
+                    f"  {i:2d}. Body {fb.body_id:3d} @ t={fb.time_years:6.2f} years  "
+                    f"[{sail_str:10s}] [{science_str}]"
+                )
+
+        lines.append("=" * 70)
+        return "\n".join(lines)
+
+    @staticmethod
+    def from_file(filepath: str | Path) -> 'MissionPlan':
+        """
+        Load a mission plan from a JSON file.
+
+        Args:
+            filepath: Path to JSON file containing mission plan
+
+        Returns:
+            MissionPlan object
+
+        Example:
+            >>> plan = MissionPlan.from_file('mission0.pln')
+            >>> print(plan.summary())
+        """
+        import json
+
+        filepath = Path(filepath)
+
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+
+        return MissionPlan(**data)
+
+    def to_file(self, filepath: str | Path) -> None:
+        """
+        Save the mission plan to a JSON file.
+
+        Args:
+            filepath: Path to output JSON file
+
+        Example:
+            >>> plan.to_file('mission1.pln')
+        """
+        import json
+
+        filepath = Path(filepath)
+
+        # Convert to dict that can be JSON serialized
+        data = {
+            'initial_state': self.initial_state,
+            'flybys': [
+                {
+                    'body_id': fb.body_id,
+                    'time_years': fb.time_years,
+                    'use_sail': fb.use_sail,
+                    'do_science': fb.do_science,
+                }
+                for fb in self.flybys
+            ]
+        }
+
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=2)
+
+    def analyze(self) -> dict:
+        """
+        Analyze the mission plan for feasibility and score.
+
+        This method will propagate the trajectory, check flyby constraints,
+        and compute the mission score.
+
+        Returns:
+            Dictionary with analysis results including:
+            - feasible: bool
+            - score: float
+            - constraints: dict with constraint violations
+            - trajectory: propagated state history
+
+        TODO: Implement trajectory propagation and constraint checking
+        """
+        raise NotImplementedError(
+            "Mission analysis not yet implemented. "
+            "This will propagate trajectories and check feasibility."
+        )

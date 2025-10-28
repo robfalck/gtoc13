@@ -17,12 +17,21 @@ from .astrodynamics import (
 
     # Functions
     solve_kepler,
+    solve_kepler_vmap,
     elements_to_cartesian,
     solar_sail_acceleration,
-    keplerian_derivatives,
-    solar_sail_derivatives,
     compute_v_infinity,
     patched_conic_flyby,
+)
+
+from .ode import (
+    # ODE functions
+    gtoc13_ode,
+    gtoc13_ballistic_ode,
+)
+
+from .scoring import (
+    # Scoring functions
     seasonal_penalty,
     flyby_velocity_penalty,
     time_bonus,
@@ -36,6 +45,10 @@ from .solution import (
     ConicArc,
     PropagatedArc,
     GTOC13Solution,
+
+    # Mission planning models
+    FlybyTarget,
+    MissionPlan,
 
     # Convenience functions
     create_flyby,
@@ -81,10 +94,11 @@ __all__ = [
 
     # Functions
     "solve_kepler",
+    "solve_kepler_vmap",
     "elements_to_cartesian",
     "solar_sail_acceleration",
-    "keplerian_derivatives",
-    "solar_sail_derivatives",
+    "gtoc13_ode",
+    "gtoc13_ballistic_ode",
     "compute_v_infinity",
     "patched_conic_flyby",
     "seasonal_penalty",
