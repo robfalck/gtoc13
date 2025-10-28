@@ -112,7 +112,6 @@ def solve_first_arc(target_id, time, use_sail=False):
     phase.set_state_options('r', fix_initial=False, fix_final=True, units='km')
     phase.set_state_options('v', fix_initial=False, fix_final=False, units='km/s')
     
-    
     traj.add_phase('phase', phase, promotes_inputs=['t_duration'])
     
     prob.model.add_subsystem('target_body_ephem', EphemComp(),
@@ -137,24 +136,27 @@ def solve_first_arc(target_id, time, use_sail=False):
     # If we also target a flyby v_infinity and free up the time of flight, this results
     # in 4 free variables and 4 residuals.
     
-    resids_comp = om.ExecComp(['resid_x = r_x - 200',
-                               'resid_vx0 = vx0 - 0.0',
+    resids_comp = om.ExecComp(['resid_x0 = r_x0 + 200',
                                'resid_vy0 = vy0 - 0.0',
+                               'resid_vz0 = vz0 - 0.0',
                                'resid_vinf = v_inf_mag - v_inf_target'],
-                               resid_x={'units': 'AU'},
-                               resid_vx0={'units': 'km/s'},
+                               resid_x0={'units': 'AU'},
+                               r_x0={'units': 'AU'},
+                               vy0={'units': 'km/s'},
+                               vz0={'units': 'km/s'},
                                resid_vy0={'units': 'km/s'},
+                               resid_vz0={'units': 'km/s'},
                                resid_vinf={'units': 'km/s'},
                                v_inf_target={'units': 'km/s'})
 
     implicit_var_comp = om.InputResidsComp()
-    implicit_var_comp.add_input('resid_x', shape_by_conn=True, units='AU')
-    implicit_var_comp.add_input('resid_vx0', shape_by_conn=True, units='km/s')
+    implicit_var_comp.add_input('resid_x0', shape_by_conn=True, units='AU')
     implicit_var_comp.add_input('resid_vy0', shape_by_conn=True, units='km/s')
+    implicit_var_comp.add_input('resid_vz0', shape_by_conn=True, units='km/s')
     implicit_var_comp.add_input('resid_vinf', shape_by_conn=True, units='km/s')
 
-    implicit_var_comp.add_output('vf', shape=(3,), units='km/s')
     implicit_var_comp.add_output('time', units='year')
+    implicit_var_comp.add_output('vf', shape=(3,), units='km/s')
 
     prob.model.add_subsystem('resids_comp', resids_comp, promotes_outputs=['*'], promotes_inputs=['v_inf_target'])
     prob.model.add_subsystem('implicit_var_comp', implicit_var_comp, promotes_inputs=['*'])
@@ -162,13 +164,13 @@ def solve_first_arc(target_id, time, use_sail=False):
     prob.model.connect('implicit_var_comp.time', 'time')
     prob.model.connect('implicit_var_comp.vf', 'traj.phase.final_states:v')
     # Connect initial state values to residual component
-    prob.model.connect('traj.phase.initial_states:r', 'resids_comp.r_x', src_indices=om.slicer[:, 0])  # x-component
-    prob.model.connect('traj.phase.initial_states:v', 'resids_comp.vx0', src_indices=om.slicer[:, 0])  # vx component
-    prob.model.connect('traj.phase.initial_states:v', 'resids_comp.vy0', src_indices=om.slicer[:, 1])  # vy component
+    prob.model.connect('traj.phase.initial_states:r', 'resids_comp.r_x0', src_indices=om.slicer[:, 0])  # x-component
+    prob.model.connect('traj.phase.initial_states:v', 'resids_comp.vy0', src_indices=om.slicer[:, 1])  # vx component
+    prob.model.connect('traj.phase.initial_states:v', 'resids_comp.vz0', src_indices=om.slicer[:, 2])  # vy component
     prob.model.connect('flyby.v_inf_mag', 'resids_comp.v_inf_mag')
 
-    prob.model.nonlinear_solver = om.NewtonSolver(solve_subsystems=True)
-    prob.model.linear_solver = om.DirectSolver()
+    # prob.model.nonlinear_solver = om.NewtonSolver(solve_subsystems=True)
+    # prob.model.linear_solver = om.DirectSolver()
 
     prob.setup(force_alloc_complex=True)
 
@@ -183,16 +185,12 @@ def solve_first_arc(target_id, time, use_sail=False):
     
     # Set the discrete input value of the target body id
     prob.model.set_val('body_id', 10)
-    prob.model.set_val('time', 5.0, units='year')
+    prob.model.set_val('time', 30.0, units='year')
     # prob.model.set_val('implicit_var_comp.vf', [64.303246, -15.144867,  -7.330577], units='km/s')
     prob.model.set_val('target_body_ephem.body_id', 10)
-    prob.model.set_val('v_inf_target', 10, units='km/s')
+    prob.model.set_val('v_inf_target', 10.0, units='km/s')
     
-    dm.run_problem(prob, simulate=True, make_plots=True)
-
-    prob.check_partials(compact_print=True, method='cs')
-
-    return
+    dm.run_problem(prob, simulate=False, make_plots=False)
 
     # Extract solution values
     initial_time = float(prob.model.get_val('traj.phase.t_initial', units='year')[0])
@@ -232,6 +230,9 @@ def solve_first_arc(target_id, time, use_sail=False):
     print(f"\nPosition error (km): [{r_err[0]:14.6e}, {r_err[1]:14.6e}, {r_err[2]:14.6e}]")
     print(f"Position error mag:  {r_err_mag:14.6e} km ({r_err_mag/1.496e8:14.6e} AU)")
     print("="*80 + "\n")
+
+    # prob.model.list_vars(residuals=True, print_arrays=True, units=True)
+    # om.n2(prob, title='foo')
 
 
 if __name__ == '__main__':
