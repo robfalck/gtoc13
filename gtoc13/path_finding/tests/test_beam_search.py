@@ -1,5 +1,6 @@
 import unittest
 
+from numpy.testing import assert_allclose
 from gtoc13.path_finding import BeamSearch
 
 
@@ -17,7 +18,10 @@ class TestBeamSearch(unittest.TestCase):
         bs = BeamSearch(expand_fn, score_fn, beam_width=4, max_depth=5, key_fn=lambda s: s)
         final_beam = bs.run(0)
         best = max(final_beam, key=lambda n: n.cum_score)
-        print("Best:", best.cum_score, "state:", best.state, "path:", bs.reconstruct_path(best))
+
+        assert_allclose(best.cum_score, -19.0, rtol=1.0E-3, atol=1.0E-3)  # use allclose for floating point testing
+        self.assertEqual(best.state, 13)
+        self.assertEqual(bs.reconstruct_path(best), [0, 3, 6, 9, 12, 13])
 
 
 if __name__ == '__main__':
