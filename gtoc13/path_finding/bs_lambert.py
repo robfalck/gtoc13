@@ -3,9 +3,9 @@ from typing import Iterable, Optional, Tuple, Hashable
 import math
 import argparse
 import functools
+import pykep
 import numpy as np
 from gtoc13.bodies import bodies_data
-from gtoc13.lambert import lambert
 from gtoc13.astrodynamics import (
     DAY,
     MU_ALTAIRA,
@@ -65,10 +65,18 @@ ACTIVE_BODY_WEIGHTS = BASE_BODY_WEIGHTS.copy()
 
 SUBMISSION_TIME_DAYS = 0
 DV_PERIAPSIS_MAX = 1.0  # km/s threshold for admissible powered flybys
-VINF_MAX = 300.0  # km/s limit for hyperbolic excess (sanity check)
+VINF_MAX = 100.0  # km/s limit for hyperbolic excess (sanity check)
 TOF_MISSION_MAX_DAYS = 200.0  # global mission duration cap (days)
 TOF_SAMPLE_COUNT = 200  # number of sampled TOFs between bounds
 DEFAULT_SCORE_MODE = "mission"
+DEPTH_BONUS_SCALE = 0.4
+NOVELTY_BONUS_SCALE = 0.2
+CONTINUATION_SLACK_WEIGHT = 0.8
+CONTINUATION_GENTLE_WEIGHT = 0.2
+DEPTH_MODE_ALPHA = 0.35
+DEPTH_MODE_REPEAT_FACTOR = 0.7
+DEPTH_MODE_QUICK_RATIO = 0.6
+DEPTH_MODE_QUICK_BONUS_SCALE = 0.1
 
 
 def _activate_body_subset(types: set[str]) -> None:
@@ -127,8 +135,8 @@ def hohmann_tof_bounds(a1_km: float, a2_km: float, mu: float) -> Tuple[float, fl
     T_H = math.pi * math.sqrt(a_t**3 / mu)
     P1 = 2.0 * math.pi * math.sqrt(a1_km**3 / mu)
     P2 = 2.0 * math.pi * math.sqrt(a2_km**3 / mu)
-    tmin = max(0.1 * T_H, 10.0 * DAY)
-    tmax = min(5.0 * T_H, 2.0 * max(P1, P2))
+    tmin = max(0.01 * T_H, 5.0 * DAY)
+    tmax = min(1.0 * T_H, 2.0 * max(P1, P2))
     return tmin / DAY, tmax / DAY  # convert to days
 
 
@@ -189,21 +197,107 @@ def _turn_slack(
     return float(np.clip(slack, 0.0, 1.0))
 
 
-def _resonance_bonus(tof_seconds: float, orbital_period: Optional[float], ks=(1, 2, 3), halfwidth_frac: float = 0.08) -> float:
-    if orbital_period is None or orbital_period <= 0.0:
-        return 1.0
-    val = 0.0
-    for k in ks:
-        center = k * orbital_period
-        hw = max(1e-6, halfwidth_frac * center)
-        val += math.exp(-((tof_seconds - center) ** 2) / (2.0 * hw * hw))
-    return 0.5 + 0.5 * math.tanh(0.6 * val)
+def _enumerate_lambert_solutions(
+    body_depart: int,
+    body_arrive: int,
+    t_depart: float,
+    t_arrive: float,
+    max_revs: int = 2,
+) -> list[dict]:
+    """
+    Enumerate PyKEP Lambert solutions for the leg body_depart -> body_arrive.
+
+    PyKEP returns a single zero-revolution solution per call; the cw flag selects
+    the short (cw=False) or long (cw=True) branch. For higher revolutions,
+    lambert_problem returns both branches in one call. We therefore evaluate both
+    cw settings and filter duplicates to obtain a comprehensive solution set.
+    """
+    tof = t_arrive - t_depart
+    if tof <= 0.0:
+        return []
+
+    state_depart = bodies_data[body_depart].get_state(t_depart)
+    state_arrive = bodies_data[body_arrive].get_state(t_arrive)
+    r1 = np.asarray(state_depart.r, dtype=float)
+    r2 = np.asarray(state_arrive.r, dtype=float)
+
+    solutions: list[dict] = []
+
+    def add_solution(entry: dict) -> None:
+        v1 = entry["v1"]
+        v2 = entry["v2"]
+        rev = entry["rev"]
+        for existing in solutions:
+            if existing["rev"] != rev:
+                continue
+            if np.allclose(existing["v1"], v1, atol=1e-9, rtol=0.0) and np.allclose(
+                existing["v2"], v2, atol=1e-9, rtol=0.0
+            ):
+                return
+        solutions.append(entry)
+
+    args = (r1.tolist(), r2.tolist(), tof, MU_ALTAIRA)
+    for cw_flag in (False, True):
+        try:
+            lp = pykep.lambert_problem(*args, cw=cw_flag, max_revs=max_revs)
+        except Exception:
+            continue
+
+        v1_list = lp.get_v1()
+        v2_list = lp.get_v2()
+        nrev_list: list[int] = []
+        if hasattr(lp, "get_nrev"):
+            try:
+                nrev_list = list(lp.get_nrev())
+            except Exception:
+                nrev_list = []
+
+        branch_counter: dict[tuple[bool, int], int] = {}
+        for idx, (v1, v2) in enumerate(zip(v1_list, v2_list)):
+            if idx >= len(v1_list) or idx >= len(v2_list):
+                break
+
+            if nrev_list and idx < len(nrev_list):
+                rev = int(nrev_list[idx])
+            else:
+                if idx == 0:
+                    rev = 0
+                else:
+                    rev = min(1 + (idx - 1) // 2, max_revs)
+
+            if rev > max_revs:
+                continue
+
+            branch_idx_key = (cw_flag, rev)
+            branch_idx = branch_counter.get(branch_idx_key, 0)
+            branch_counter[branch_idx_key] = branch_idx + 1
+
+            if rev == 0:
+                branch = "short" if not cw_flag else "long"
+            else:
+                label_base = "cw" if cw_flag else "ccw"
+                branch = f"{label_base}_{branch_idx}"
+
+            add_solution(
+                {
+                    "rev": rev,
+                    "branch": branch,
+                    "cw": cw_flag,
+                    "v1": np.asarray(v1, dtype=float),
+                    "v2": np.asarray(v2, dtype=float),
+                    "r1": r1,
+                    "r2": np.asarray(r2, dtype=float),
+                }
+            )
+
+    return solutions
 
 
 def _continuation_bonus(turn_slack: float, vinf_mag: float, vinf_scale: float = 12.0) -> float:
     slack = np.clip(turn_slack if turn_slack is not None else 0.0, 0.0, 1.0)
-    gentle = 1.0 / (1.0 + math.exp((vinf_mag - vinf_scale) / 2.0))
-    return 0.5 + 0.5 * (0.6 * slack + 0.4 * gentle)
+    gentle = 1.0 / (1.0 + math.exp((vinf_mag - vinf_scale) / 1.5))
+    mix = CONTINUATION_SLACK_WEIGHT * slack + CONTINUATION_GENTLE_WEIGHT * gentle
+    return 0.6 + 0.4 * mix
 
 
 def mission_score(path: "State") -> float:
@@ -379,14 +473,13 @@ def medium_leg_score(
     if base <= 0.0:
         return 0.0, child
 
-    a_child = ACTIVE_SEMI_MAJOR_AXES.get(child.body, 0.0)
-    orbital_period = (
-        2.0 * math.pi * math.sqrt(a_child**3 / MU_ALTAIRA) if a_child > 0.0 else None
-    )
-    resonance = _resonance_bonus(tof_days * DAY, orbital_period)
     continuation = _continuation_bonus(slack, vinf_mag)
+    depth_index = len(prefix)
+    depth_bonus = DEPTH_BONUS_SCALE * max(1.0, float(depth_index))
+    visited_bodies = {enc.body for enc in prefix}
+    novelty_bonus = NOVELTY_BONUS_SCALE * weight if child.body not in visited_bodies else 0.0
 
-    increment = base * resonance * continuation
+    increment = base * continuation + depth_bonus + novelty_bonus
     updated_child = replace(child, J_total=parent.J_total + increment)
     return increment, updated_child
 
@@ -490,7 +583,10 @@ def key_fn(state: State) -> Hashable:
     if not state:
         return ("root",)
     last = state[-1]
-    return last.body
+    tof_bin = int(round(last.t / 10.0))  # 50-day bins
+    vinf = -1.0 if last.vinf_in is None else last.vinf_in
+    vinf_bin = int(round(vinf / 1.0))  # 2 km/s bins
+    return (last.body, tof_bin, vinf_bin)
 
 
 # --------------------- Ephemeris / Lambert helpers ---------------------
@@ -525,8 +621,8 @@ def ephemeris_position(body: int, t_days: float) -> Vec3:
 
 def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mode: str):
     """
-    Use the real Lambert solver + ephemeris to build the resolved child path.
-    Raises InfeasibleLeg if any feasibility condition fails.
+    Use PyKEP Lambert solutions (short/long, up to 2 revs) to build child encounters.
+    Raises InfeasibleLeg if no feasible solution survives pruning.
     """
     if not parent_path:
         raise InfeasibleLeg("Parent path must contain at least one encounter.")
@@ -543,91 +639,129 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
     _, v_body_depart = body_state(parent.body, t_depart)
     _, v_body_arrival = body_state(prop.body, t_arrival)
 
-    _, v_depart, r_arrival, v_arrive, converged = lambert(
-        parent.body,
-        prop.body,
-        t_depart_sec,
-        t_arrival_sec,
-        bodies_data=bodies_data,
-    )
-    if not converged:
+    solutions = _enumerate_lambert_solutions(parent.body, prop.body, t_depart_sec, t_arrival_sec, max_revs=2)
+    if not solutions:
         raise InfeasibleLeg("Lambert solver did not converge.")
 
-    vinf_out_vec = np.asarray(v_depart, dtype=float) - v_body_depart
-    vinf_in_vec = np.asarray(v_arrive, dtype=float) - v_body_arrival
+    best: Optional[Tuple[float, State]] = None
 
-    vinf_out = float(np.linalg.norm(vinf_out_vec))
-    vinf_in = float(np.linalg.norm(vinf_in_vec))
-    vinf_out_vec_tuple = tuple(float(x) for x in vinf_out_vec)
-    vinf_in_vec_tuple = tuple(float(x) for x in vinf_in_vec)
+    for sol in solutions:
+        vinf_out_vec = np.asarray(sol["v1"], dtype=float) - v_body_depart
+        vinf_in_vec = np.asarray(sol["v2"], dtype=float) - v_body_arrival
 
-    if (
-        not math.isfinite(vinf_out)
-        or not math.isfinite(vinf_in)
-        or (VINF_MAX is not None and (vinf_out > VINF_MAX or vinf_in > VINF_MAX))
-    ):
-        raise InfeasibleLeg(
-            f"Hyperbolic excess exceeds limit: vinf_out={vinf_out:.3f} km/s, vinf_in={vinf_in:.3f} km/s"
+        vinf_out = float(np.linalg.norm(vinf_out_vec))
+        vinf_in = float(np.linalg.norm(vinf_in_vec))
+        if (
+            not math.isfinite(vinf_out)
+            or not math.isfinite(vinf_in)
+            or (VINF_MAX is not None and (vinf_out > VINF_MAX or vinf_in > VINF_MAX))
+        ):
+            continue
+
+        vinf_out_vec_tuple = tuple(float(x) for x in vinf_out_vec)
+        vinf_in_vec_tuple = tuple(float(x) for x in vinf_in_vec)
+
+        flyby_valid, flyby_altitude, dv_mag, dv_vec = evaluate_flyby(
+            parent.body, parent.vinf_in_vec, vinf_out_vec_tuple
+        )
+        if dv_mag is not None and DV_PERIAPSIS_MAX is not None and dv_mag > DV_PERIAPSIS_MAX:
+            continue
+
+        parent_resolved = replace(
+            parent,
+            vinf_out=vinf_out,
+            vinf_out_vec=vinf_out_vec_tuple,
+            flyby_valid=flyby_valid,
+            flyby_altitude=flyby_altitude,
+            dv_periapsis=dv_mag,
+            dv_periapsis_vec=dv_vec,
+        )
+        prefix = parent_path[:-1] + (parent_resolved,)
+
+        provisional_child = Encounter(
+            body=prop.body,
+            t=t_arrival,
+            r=tuple(float(x) for x in sol["r2"]),
+            vinf_in=vinf_in,
+            vinf_in_vec=vinf_in_vec_tuple,
+            vinf_out=None,
+            vinf_out_vec=None,
+            flyby_valid=None,
+            flyby_altitude=None,
+            dv_periapsis=None,
+            dv_periapsis_vec=None,
+            J_total=parent_resolved.J_total,
         )
 
-    flyby_valid, flyby_altitude, dv_mag, dv_vec = evaluate_flyby(
-        parent.body, parent.vinf_in_vec, vinf_out_vec_tuple
-    )
-    if dv_mag is not None and DV_PERIAPSIS_MAX is not None and dv_mag > DV_PERIAPSIS_MAX:
-        raise InfeasibleLeg(
-            f"Required periapsis burn {dv_mag:.3f} km/s exceeds threshold {DV_PERIAPSIS_MAX:.3f} km/s."
-        )
+        if mode == "mission":
+            candidate_path = prefix + (provisional_child,)
+            total_score = mission_score(candidate_path)
+            child_contrib = total_score - parent_resolved.J_total
+            child = replace(provisional_child, J_total=total_score)
+        elif mode == "medium":
+            child_contrib, child = medium_leg_score(
+                prefix,
+                parent_resolved,
+                provisional_child,
+                vinf_out_vec_tuple,
+                vinf_in_vec_tuple,
+                prop.tof,
+            )
+        elif mode == "simple":
+            tof_days = prop.tof
+            if tof_days <= 0.0:
+                continue
+            weight = ACTIVE_BODY_WEIGHTS.get(provisional_child.body, 0.0)
+            vinf_mag = provisional_child.vinf_in or 1e-6
+            base = weight / (tof_days * vinf_mag)
+            depth_index = len(prefix)
+            depth_bonus = DEPTH_BONUS_SCALE * max(1.0, float(depth_index))
+            visited_bodies = {enc.body for enc in prefix}
+            novelty_bonus = NOVELTY_BONUS_SCALE * weight if provisional_child.body not in visited_bodies else 0.0
+            child_contrib = base + depth_bonus + novelty_bonus
+            child = replace(provisional_child, J_total=parent_resolved.J_total + child_contrib)
+        elif mode == "depth":
+            tof_days = prop.tof
+            if tof_days <= 0.0:
+                continue
+            weight = ACTIVE_BODY_WEIGHTS.get(provisional_child.body, 0.0)
+            vinf_mag = provisional_child.vinf_in or 1e-6
+            vinf_mag = max(vinf_mag, 1e-6)
+            base = weight / (tof_days * vinf_mag) if weight > 0.0 else 0.0
 
-    parent_resolved = replace(
-        parent,
-        vinf_out=vinf_out,
-        vinf_out_vec=vinf_out_vec_tuple,
-        flyby_valid=flyby_valid,
-        flyby_altitude=flyby_altitude,
-        dv_periapsis=dv_mag,
-        dv_periapsis_vec=dv_vec,
-    )
-    prefix = parent_path[:-1] + (parent_resolved,)
+            depth_index = len(prefix)
+            depth_multiplier = 1.0 + DEPTH_MODE_ALPHA * math.log1p(depth_index)
 
-    provisional_child = Encounter(
-        body=prop.body,
-        t=t_arrival,
-        r=tuple(float(x) for x in np.asarray(r_arrival, dtype=float)),
-        vinf_in=vinf_in,
-        vinf_in_vec=vinf_in_vec_tuple,
-        vinf_out=None,
-        vinf_out_vec=None,
-        flyby_valid=None,
-        flyby_altitude=None,
-        dv_periapsis=None,
-        dv_periapsis_vec=None,
-        J_total=parent_resolved.J_total,  # placeholder
-    )
+            quick_bonus = 0.0
+            try:
+                tmin, tmax = hohmann_bounds_for_bodies(parent.body, provisional_child.body)
+            except ValueError:
+                tmin = tmax = None
+            if tmin is not None and tmax is not None and tmax > tmin:
+                midpoint = 0.5 * (tmin + tmax)
+                quick_threshold = DEPTH_MODE_QUICK_RATIO * midpoint
+                if tof_days <= quick_threshold:
+                    quick_bonus = DEPTH_MODE_QUICK_BONUS_SCALE * weight
 
-    if mode == "mission":
-        candidate_path = prefix + (provisional_child,)
-        total_score = mission_score(candidate_path)
-        child_contrib = total_score - parent_resolved.J_total
-        child = replace(provisional_child, J_total=total_score)
-    elif mode == "medium":
-        child_contrib, child = medium_leg_score(
-            prefix,
-            parent_resolved,
-            provisional_child,
-            vinf_out_vec_tuple,
-            vinf_in_vec_tuple,
-            prop.tof,
-        )
-    else:
-        tof_days = prop.tof
-        if tof_days <= 0.0:
-            raise InfeasibleLeg("Time of flight must be positive for scoring.")
-        weight = ACTIVE_BODY_WEIGHTS.get(provisional_child.body, 0.0)
-        vinf_mag = provisional_child.vinf_in or 1e-6
-        child_contrib = weight / (tof_days * vinf_mag)
-        child = replace(provisional_child, J_total=parent_resolved.J_total + child_contrib)
+            visited_bodies = {enc.body for enc in prefix}
+            novelty_bonus = NOVELTY_BONUS_SCALE * weight if provisional_child.body not in visited_bodies else 0.0
+            repeat_factor = 1.0 if provisional_child.body not in visited_bodies else DEPTH_MODE_REPEAT_FACTOR
 
-    return child_contrib, prefix + (child,)
+            incremental = base * depth_multiplier * repeat_factor + quick_bonus + novelty_bonus
+            child_contrib = incremental
+            child = replace(provisional_child, J_total=parent_resolved.J_total + child_contrib)
+        else:
+            raise ValueError(f"Unknown score mode '{mode}'.")
+
+        candidate_state = prefix + (child,)
+        if best is None or child_contrib > best[0]:
+            best = (child_contrib, candidate_state)
+
+    if best is None:
+        raise InfeasibleLeg("Lambert solver did not converge.")
+
+    return best
+
 
 
 def _format_encounter(enc: Encounter, idx: int) -> str:
@@ -643,7 +777,7 @@ def _format_encounter(enc: Encounter, idx: int) -> str:
 
 
 def run_cli() -> None:
-    global DV_PERIAPSIS_MAX, VINF_MAX, TOF_MISSION_MAX_DAYS
+    global DV_PERIAPSIS_MAX, VINF_MAX, TOF_MISSION_MAX_DAYS, TOF_SAMPLE_COUNT
     parser = argparse.ArgumentParser(
         description="Beam search using Lambert arcs and patched-conic flybys."
     )
@@ -707,9 +841,10 @@ def run_cli() -> None:
     )
     parser.add_argument(
         "--score-mode",
-        choices=("mission", "medium", "simple"),
+        choices=("mission", "medium", "simple", "depth"),
         default=DEFAULT_SCORE_MODE,
-        help="Scoring model: 'mission' uses compute_score; 'simple' uses weight/TOF per leg.",
+        help="Scoring model: 'mission' uses compute_score; 'medium' mixes science heuristics; "
+        "'simple' uses weight/TOF; 'depth' prioritizes unique, rapid legs for longer chains.",
     )
     parser.add_argument(
         "--body-types",
@@ -728,11 +863,10 @@ def run_cli() -> None:
         help="Suppress per-depth progress logging.",
     )
     args = parser.parse_args()
+    TOF_SAMPLE_COUNT = max(1, int(args.tof_samples))
     DV_PERIAPSIS_MAX = None if args.dv_max is not None and args.dv_max < 0 else args.dv_max
     VINF_MAX = None if args.vinf_max is not None and args.vinf_max < 0 else args.vinf_max
     TOF_MISSION_MAX_DAYS = None if args.tof_max is not None and args.tof_max < 0 else args.tof_max
-    global TOF_SAMPLE_COUNT
-    TOF_SAMPLE_COUNT = max(1, int(args.tof_samples))
 
     type_aliases = {
         "planet": "planet",

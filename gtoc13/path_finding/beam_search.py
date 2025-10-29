@@ -1,8 +1,23 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Callable, Hashable, Iterable, Optional, Sequence, Tuple, List
-import heapq, math
+import heapq, math, time
+
+
+def _score_chunk(
+    score_fn: Callable[[Any, Any], float | tuple[float, Any]],
+    chunk: List[Tuple["Node", Any]],
+) -> List[Tuple[int, Any, float, Any]]:
+    out: List[Tuple[int, Any, float, Any]] = []
+    for parent, prop in chunk:
+        res = score_fn(parent.state, prop)
+        if isinstance(res, tuple):
+            inc, resolved = res
+        else:
+            inc, resolved = res, None
+        out.append((parent.id, prop, float(inc), resolved))
+    return out
 
 # ============================================================
 # Minimal, generic Beam Search (parallel scoring; dynamics-agnostic)
@@ -88,6 +103,7 @@ class BeamSearch:
         parallel_backend: Optional[str] = "thread",   # "thread" | "process" | None
         max_workers: Optional[int] = None,
         score_chunksize: int = 256,                   # batch size for scoring tasks
+        progress_fn: Optional[Callable[[int, int, int, float, float], None]] = None,
     ) -> None:
         self.expand_fn = expand_fn
         self.score_fn = score_fn
@@ -95,9 +111,9 @@ class BeamSearch:
         self.max_depth = int(max_depth)
         self.key_fn = key_fn
         self.is_terminal_fn = is_terminal_fn or (lambda n: n.depth >= self.max_depth)
-        self.parallel_backend = (parallel_backend or "none").lower()
         self.max_workers = max_workers
         self.score_chunksize = max(1, int(score_chunksize))
+        self.progress_fn = progress_fn
 
         # Internals
         self._next_id = 0
@@ -109,29 +125,47 @@ class BeamSearch:
         """Run beam search from `root_state`. Return final top-K nodes."""
         root = self._make_node(None, root_state, depth=0, cum_score=0.0)
         frontier: List[Node] = [root]
+        total_start = time.perf_counter()
+        if self.progress_fn is not None:
+            self.progress_fn(0, len(frontier), 0, 0.0, 0.0)
 
-        for _ in range(1, self.max_depth + 1):
-            # Keep only top-K parents
+        for depth in range(1, self.max_depth + 1):
             frontier = self._top_k(frontier, self.beam_width)
-            if all(self.is_terminal_fn(n) for n in frontier):
+            parents = len(frontier)
+            if parents == 0:
                 break
 
-            # (1) Cheap expansion -> (parent, proposal) pairs
+            if all(self.is_terminal_fn(n) for n in frontier):
+                total_elapsed = time.perf_counter() - total_start
+                if self.progress_fn is not None:
+                    self.progress_fn(depth, parents, 0, 0.0, total_elapsed)
+                break
+
+            depth_start = time.perf_counter()
+
             expansions: List[Tuple[Node, Any]] = []
             for parent in frontier:
                 if self.is_terminal_fn(parent):
                     continue
                 for prop in self.expand_fn(parent.state):
                     expansions.append((parent, prop))
-            if not expansions:
+            expansion_count = len(expansions)
+
+            if expansion_count == 0:
+                depth_elapsed = time.perf_counter() - depth_start
+                total_elapsed = time.perf_counter() - total_start
+                if self.progress_fn is not None:
+                    self.progress_fn(depth, parents, expansion_count, depth_elapsed, total_elapsed)
                 break
 
-            # (2) Heavy scoring (parallelizable)
             children = self._evaluate_and_build_children(expansions)
             if not children:
+                depth_elapsed = time.perf_counter() - depth_start
+                total_elapsed = time.perf_counter() - total_start
+                if self.progress_fn is not None:
+                    self.progress_fn(depth, parents, expansion_count, depth_elapsed, total_elapsed)
                 break
 
-            # (3) Optional dedup: keep best child per coarse key
             if self.key_fn is not None:
                 best_by_key: dict[Hashable, Node] = {}
                 for c in children:
@@ -141,10 +175,19 @@ class BeamSearch:
                         best_by_key[k] = c
                 children = list(best_by_key.values())
                 if not children:
+                    depth_elapsed = time.perf_counter() - depth_start
+                    total_elapsed = time.perf_counter() - total_start
+                    if self.progress_fn is not None:
+                        self.progress_fn(depth, parents, expansion_count, depth_elapsed, total_elapsed)
                     break
 
-            # (4) Select survivors
             frontier = self._top_k(children, self.beam_width)
+            survivors = len(frontier)
+            depth_elapsed = time.perf_counter() - depth_start
+            total_elapsed = time.perf_counter() - total_start
+            if self.progress_fn is not None:
+                self.progress_fn(depth, survivors, expansion_count, depth_elapsed, total_elapsed)
+
             if all(self.is_terminal_fn(n) for n in frontier):
                 break
 
@@ -189,29 +232,12 @@ class BeamSearch:
         for i in range(0, len(expansions), self.score_chunksize):
             chunks.append(expansions[i:i + self.score_chunksize])
 
-        def score_chunk(chunk: List[Tuple[Node, Any]]) -> List[Tuple[int, Any, float, Any]]:
-            # Returns (parent_id, proposal, inc_score, resolved_or_None)
-            out: List[Tuple[int, Any, float, Any]] = []
-            for parent, prop in chunk:
-                res = self.score_fn(parent.state, prop)
-                if isinstance(res, tuple):
-                    inc, resolved = res
-                else:
-                    inc, resolved = res, None
-                out.append((parent.id, prop, float(inc), resolved))
-            return out
-
         # Run scoring
         scored: List[Tuple[int, Any, float, Any]] = []
-        if self.parallel_backend in ("none", None):
-            for ch in chunks:
-                scored.extend(score_chunk(ch))
-        else:
-            Exec = ThreadPoolExecutor if self.parallel_backend == "thread" else ProcessPoolExecutor
-            with Exec(max_workers=self.max_workers) as ex:
-                futs = [ex.submit(score_chunk, ch) for ch in chunks]
-                for f in as_completed(futs):
-                    scored.extend(f.result())
+        with ProcessPoolExecutor(max_workers=self.max_workers) as ex:
+            futs = [ex.submit(_score_chunk, self.score_fn, ch) for ch in chunks]
+            for f in as_completed(futs):
+                scored.extend(f.result())
 
         # Build children; drop non-finite increments
         children: List[Node] = []
