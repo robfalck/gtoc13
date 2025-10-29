@@ -45,10 +45,12 @@ jobs:
         python -m pip install --upgrade pip
         # Install latest versions of all dependencies
         pip install --upgrade \
-          jax jaxlib numpy diffrax pydantic pykep \
-          pytest black isort mypy
+          jax jaxlib numpy diffrax pydantic \
+          pytest isort mypy
         # Install package in development mode
         pip install -e . --no-deps
+        # Install optional dependencies (pykep is optional)
+        pip install --upgrade pykep || echo "Warning: pykep installation failed (optional dependency)"
 
     - name: Display installed versions
       run: |
