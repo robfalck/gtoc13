@@ -17,12 +17,14 @@ The workflow tests against multiple configurations:
 
 1. **Checkout code**: Gets the latest code from the repository
 2. **Setup Python**: Installs the specified Python version with pip caching
-3. **Install dependencies**:
+3. **Setup Micromamba**: Installs micromamba for conda package management
+4. **Install pykep**: Installs pykep from conda-forge (more reliable than pip)
+5. **Install dependencies**:
    - For **pinned** versions: Installs from `pyproject.toml` with `pip install -e ".[dev]"`
    - For **latest** versions: Installs latest packages with `pip install --upgrade`
-4. **Display versions**: Shows all installed package versions for debugging
-5. **Run tests**: Executes `pytest gtoc13/ -v --tb=short`
-6. **Check for updates**: If latest deps fail, warns about updating `pyproject.toml`
+6. **Display versions**: Shows all installed package versions for debugging
+7. **Run tests**: Executes `pytest gtoc13/ -v --tb=short`
+8. **Check for updates**: If latest deps fail, warns about updating `pyproject.toml`
 
 ### When it runs
 
