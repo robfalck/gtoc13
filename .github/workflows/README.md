@@ -43,6 +43,12 @@ If tests fail with latest dependencies but pass with pinned versions, it indicat
 1. A dependency has introduced a breaking change
 2. You may need to update your code or pin to an older version in `pyproject.toml`
 
+### Why use conda-forge for pykep?
+
+PyKEP (Python Keplerian Toolbox) is a C++ library with Python bindings that can be difficult to install via pip due to compilation requirements. Installing from conda-forge provides pre-built binaries that work reliably across different platforms and Python versions.
+
+The workflow uses micromamba (a fast, lightweight conda package manager) to install pykep from the conda-forge channel before installing other Python dependencies via pip.
+
 ### Badge
 
 The workflow status badge in README.md shows the current test status:
