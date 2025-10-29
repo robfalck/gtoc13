@@ -1,3 +1,27 @@
+"""
+Numerical optimizer-based path finder for the GTOC13 Lambert model.
+
+This module encodes a candidate trajectory as a flat vector of body IDs and
+time-of-flight values and lets SciPy drive the search (differential evolution
+or basin hopping). Penalty terms enforce Δv, v∞, mission duration, and repeat
+constraints while the detailed physics—Lambert solves and flyby analysis—reuse
+the `bs_lambert` helpers.
+
+Example
+-------
+Search for three-leg tours among the planets using differential evolution:
+
+    python -m gtoc13.path_finding.ga_search \\
+        --optimizer de \\
+        --start-body 1 \\
+        --max-legs 3 \\
+        --require-full-length \\
+        --body-types planets \\
+        --beam-width 100
+
+Switch `--optimizer basinhopping` to explore with stochastic hops instead.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -91,7 +115,14 @@ def _create_root_encounter(start_body: int, start_epoch: float, start_vinf: Opti
 
 
 def _decode_vector(x: np.ndarray, config: GAConfig) -> List[Tuple[int, float, int]]:
-    """Convert optimizer vector into list of (body_id, tof_days, branch_index)."""
+    """
+    Convert a continuous optimizer vector into discrete legs (body, TOF).
+
+    The first value of each 2-slot block indexes into the allowable bodies,
+    the second stores the TOF in days. Branch selection is handled later by
+    picking the lowest-v∞ Lambert solution, so the returned branch index is
+    a placeholder for compatibility with the scoring code.
+    """
     genes: List[Tuple[int, float, int]] = []
     x = np.asarray(x, dtype=float)
     segments = config.max_legs

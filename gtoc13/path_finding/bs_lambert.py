@@ -1,3 +1,24 @@
+"""
+Lambert-powered beam search driver used for the GTOC13 spacecraft routing experiments.
+
+The module wires the generic :class:`BeamSearch` engine to mission-specific logic:
+Lambert transfers (via PyKEP), patched-conic flyby checks, and several scoring modes.
+
+Example
+-------
+Run a small beam search that expands from Planet 1 with the "simple" score:
+
+    python -m gtoc13.path_finding.bs_lambert \\
+        --beam-width 20 \\
+        --max-depth 4 \\
+        --start-body 1 \\
+        --start-epoch 0.0 \\
+        --score-mode simple \\
+        --body-types planets
+
+This produces progress updates per depth and prints the highest-scoring paths found.
+"""
+
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional, Tuple, Hashable
 import math
@@ -17,9 +38,6 @@ from gtoc13.astrodynamics import (
 from gtoc13.path_finding.beam_search import BeamSearch
 
 # --------------------- Data shapes ---------------------
-"""
-script to use the beam search with lambert for the dynamics
-"""
 
 Vec3 = Tuple[float, float, float]
 
@@ -63,6 +81,7 @@ ACTIVE_BODY_IDS: tuple[int, ...] = BASE_BODY_IDS
 ACTIVE_SEMI_MAJOR_AXES = BASE_SEMI_MAJOR_AXES.copy()
 ACTIVE_BODY_WEIGHTS = BASE_BODY_WEIGHTS.copy()
 
+# Default mission configuration; the CLI mutates these module-level values.
 SUBMISSION_TIME_DAYS = 0
 DV_PERIAPSIS_MAX = 1.0  # km/s threshold for admissible powered flybys
 VINF_MAX = 100.0  # km/s limit for hyperbolic excess (sanity check)
@@ -80,6 +99,7 @@ DEPTH_MODE_QUICK_BONUS_SCALE = 0.1
 
 
 def _activate_body_subset(types: set[str]) -> None:
+    """Restrict the global ephemeris/weight tables to the requested body types."""
     global ACTIVE_BODY_IDS, ACTIVE_SEMI_MAJOR_AXES, ACTIVE_BODY_WEIGHTS
 
     normalized = {t.lower() for t in types if t}
@@ -97,6 +117,7 @@ def _activate_body_subset(types: set[str]) -> None:
 
 
 def _flybys_from_path(path: "State") -> list[dict]:
+    """Convert a state into the dictionary format expected by `compute_score`."""
     flybys: list[dict] = []
     for encounter in path:
         if encounter.vinf_in is None:
@@ -515,8 +536,11 @@ State = tuple[Encounter, ...]  # full path (immutable)
 
 def expand_fn(path: State) -> Iterable[Proposal]:
     """
-    Enumerate cheap proposals only (no heavy physics).
-    Replace (targets, TOFs) with your sampler.
+    Enumerate candidate legs from the current path without solving Lambert.
+
+    The beam search calls this to obtain a coarse list of (next body, TOF) pairs.
+    Only lightweight heuristics are evaluated here so that the expensive Lambert
+    solve is deferred to the scoring phase.
     """
     last_body = path[-1].body if path else 2  # fallback if root missing
     mission_start = path[0].t if path else 0.0
@@ -546,8 +570,12 @@ def expand_fn(path: State) -> Iterable[Proposal]:
 
 def score_fn_dispatch(mode: str, path: State, prop: Proposal):
     """
-    Heavy step: run Lambert/feasibility, retro-resolve parent.vinf_out,
-    build child Encounter (with t, r, vinf_in), and return (delta, new_path).
+    Heavy evaluation step invoked by the beam.
+
+    A candidate from :func:`expand_fn` is converted into a full trajectory leg:
+    we solve Lambert (picking the lowest-v∞ branch), update the parent's flyby
+    bookkeeping, score the child according to the selected mode, and return the
+    incremental score together with the extended path.
     """
     # Parent encounter (or synthetic launch if empty)
     if not path:
