@@ -85,10 +85,10 @@ ACTIVE_BODY_WEIGHTS = BASE_BODY_WEIGHTS.copy()
 SUBMISSION_TIME_DAYS = 0
 DV_PERIAPSIS_MAX = 1.0  # km/s threshold for admissible powered flybys
 VINF_MAX = 100.0  # km/s limit for hyperbolic excess (sanity check)
-TOF_MISSION_MAX_DAYS = 200.0  # global mission duration cap (days)
+TOF_MISSION_MAX_DAYS = 200.0*365.25  # global mission duration cap (days)
 TOF_SAMPLE_COUNT = 200  # number of sampled TOFs between bounds
-DEFAULT_SCORE_MODE = "mission"
-DEPTH_BONUS_SCALE = 0.4
+DEFAULT_SCORE_MODE = "medium"
+DEPTH_BONUS_SCALE = 0.9
 NOVELTY_BONUS_SCALE = 0.2
 CONTINUATION_SLACK_WEIGHT = 0.8
 CONTINUATION_GENTLE_WEIGHT = 0.2
@@ -157,7 +157,7 @@ def hohmann_tof_bounds(a1_km: float, a2_km: float, mu: float) -> Tuple[float, fl
     P1 = 2.0 * math.pi * math.sqrt(a1_km**3 / mu)
     P2 = 2.0 * math.pi * math.sqrt(a2_km**3 / mu)
     tmin = max(0.01 * T_H, 5.0 * DAY)
-    tmax = min(1.0 * T_H, 2.0 * max(P1, P2))
+    tmax = min(3.0 * T_H, 2.0 * max(P1, P2))
     return tmin / DAY, tmax / DAY  # convert to days
 
 
@@ -723,7 +723,7 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
 
         if mode == "mission":
             candidate_path = prefix + (provisional_child,)
-            total_score = mission_score(candidate_path)
+            total_score = mission_score(candidate_path) / (prop.tof/TOF_MISSION_MAX_DAYS)  # divide by TOF to discourage long transfers to single bodies
             child_contrib = total_score - parent_resolved.J_total
             child = replace(provisional_child, J_total=total_score)
         elif mode == "medium":
