@@ -30,8 +30,18 @@ def get_body_state(body_id: int, epoch: float, bodies_data: dict):
     if body_id not in bodies_data:
         raise ValueError(f"Body ID {body_id} not found in bodies_data")
 
-    elements = bodies_data[body_id]
-    state = elements_to_cartesian(elements, epoch)
+    entry = bodies_data[body_id]
+
+    if hasattr(entry, "get_state"):
+        # The entry is a Body object; delegate to its helper.
+        state = entry.get_state(epoch)
+    elif hasattr(entry, "elements"):
+        # Fallback: entry exposes orbital elements.
+        state = elements_to_cartesian(entry.elements, epoch)
+    else:
+        # Backward compatibility: entry is an OrbitalElements struct.
+        state = elements_to_cartesian(entry, epoch)
+
     return np.array(state.r), np.array(state.v)
 
 
@@ -235,7 +245,7 @@ def lambert_universal_variables(
     short: bool = True,
     eps: float = 1e-8,
     max_iter: int = 50
-) -> Tuple[jnp.ndarray, jnp.ndarray, bool]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, float, bool]:
     """
     Solve Lambert's problem using the universal variables formulation.
 
@@ -249,7 +259,11 @@ def lambert_universal_variables(
         max_iter: Maximum number of iterations
 
     Returns:
-        (v1, v2, converged): Initial velocity, final velocity (km/s), and convergence flag
+        (v1, v2, z_final, converged):
+            v1: Initial velocity (km/s)
+            v2: Final velocity (km/s)
+            z_final: Universal variable at termination
+            converged: Whether the solver converged
     """
     # Magnitudes
     r1_mag = jnp.linalg.norm(r1)
@@ -469,7 +483,7 @@ def lambert(
     r1_jax = jnp.array(r1)
     r2_jax = jnp.array(r2)
 
-    v1_transfer, v2_transfer, converged = lambert_universal_variables(
+    v1_transfer, v2_transfer, _, converged = lambert_universal_variables(
         r1_jax, r2_jax, dt, mu, short, eps, max_iter
     )
 

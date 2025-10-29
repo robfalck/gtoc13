@@ -333,11 +333,15 @@ def compute_score(
         
         for i, fb in enumerate(fb_list[:13]):  # Max 13 scientific flybys per body
             # Get previous flyby positions for this body
-            r_hat_prev = jnp.array([fb_list[j]['r_hat'] for j in range(i)])
-            
+            prev_list = [jnp.asarray(fb_list[j]['r_hat']) for j in range(i)]
+            if prev_list:
+                r_hat_prev = jnp.stack(prev_list, axis=0)
+            else:
+                r_hat_prev = jnp.zeros((0, 3))
+
             S = seasonal_penalty(fb['r_hat'], r_hat_prev)
             F = flyby_velocity_penalty(fb['v_infinity'])
-            
+
             total_score += w_k * S * F
     
     J = b * c * total_score
