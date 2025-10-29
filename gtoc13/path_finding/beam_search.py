@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Hashable, Iterable, Optional, Sequence, Tuple, List
 import heapq, math, time
 
@@ -111,6 +111,7 @@ class BeamSearch:
         self.max_depth = int(max_depth)
         self.key_fn = key_fn
         self.is_terminal_fn = is_terminal_fn or (lambda n: n.depth >= self.max_depth)
+        self.parallel_backend = parallel_backend
         self.max_workers = max_workers
         self.score_chunksize = max(1, int(score_chunksize))
         self.progress_fn = progress_fn
@@ -232,12 +233,21 @@ class BeamSearch:
         for i in range(0, len(expansions), self.score_chunksize):
             chunks.append(expansions[i:i + self.score_chunksize])
 
-        # Run scoring
+        # Run scoring based on parallel_backend
         scored: List[Tuple[int, Any, float, Any]] = []
-        with ProcessPoolExecutor(max_workers=self.max_workers) as ex:
-            futs = [ex.submit(_score_chunk, self.score_fn, ch) for ch in chunks]
-            for f in as_completed(futs):
-                scored.extend(f.result())
+        if self.parallel_backend == "process":
+            with ProcessPoolExecutor(max_workers=self.max_workers) as ex:
+                futs = [ex.submit(_score_chunk, self.score_fn, ch) for ch in chunks]
+                for f in as_completed(futs):
+                    scored.extend(f.result())
+        elif self.parallel_backend == "thread":
+            with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+                futs = [ex.submit(_score_chunk, self.score_fn, ch) for ch in chunks]
+                for f in as_completed(futs):
+                    scored.extend(f.result())
+        else:  # None - serial execution
+            for ch in chunks:
+                scored.extend(_score_chunk(self.score_fn, ch))
 
         # Build children; drop non-finite increments
         children: List[Node] = []

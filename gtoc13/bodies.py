@@ -4,6 +4,7 @@ import numpy as np
 
 import jax.numpy as jnp
 import pydantic
+from pydantic import ConfigDict
 
 from gtoc13.orbital_elements import OrbitalElements
 
@@ -20,15 +21,14 @@ class Body(pydantic.BaseModel):
         weight: Scientific weight for scoring
         elements: Orbital elements of the body
     """
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # Allow OrbitalElements (NamedTuple)
+
     name: str
     id: int
     mu: float
     radius: float
     weight: float
     elements: OrbitalElements
-
-    class Config:
-        arbitrary_types_allowed = True  # Allow OrbitalElements (NamedTuple)
 
     def get_state(self, epoch: float):
         """
