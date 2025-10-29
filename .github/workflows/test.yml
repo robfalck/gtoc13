@@ -1,0 +1,76 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, develop, testing ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+        dependency-version: ["pinned", "latest"]
+        exclude:
+          # Only test latest dependencies with Python 3.12
+          - python-version: "3.10"
+            dependency-version: "latest"
+          - python-version: "3.11"
+            dependency-version: "latest"
+
+    name: Python ${{ matrix.python-version }} (${{ matrix.dependency-version }} deps)
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: 'pip'
+
+    - name: Install dependencies (pinned versions)
+      if: matrix.dependency-version == 'pinned'
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Install dependencies (latest versions)
+      if: matrix.dependency-version == 'latest'
+      run: |
+        python -m pip install --upgrade pip
+        # Install latest versions of all dependencies
+        pip install --upgrade \
+          jax jaxlib numpy diffrax pydantic pykep \
+          pytest black isort mypy
+        # Install package in development mode
+        pip install -e . --no-deps
+
+    - name: Display installed versions
+      run: |
+        echo "=== Python version ==="
+        python --version
+        echo ""
+        echo "=== Installed packages ==="
+        pip list
+        echo ""
+        echo "=== Key package versions ==="
+        python -c "import jax; print(f'JAX: {jax.__version__}')"
+        python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
+        python -c "import diffrax; print(f'Diffrax: {diffrax.__version__}')"
+        python -c "import pydantic; print(f'Pydantic: {pydantic.__version__}')"
+
+    - name: Run unittests
+      run: |
+        python -m pytest gtoc13/ -v --tb=short
+
+    - name: Check if pyproject.toml needs updating (latest deps only)
+      if: matrix.dependency-version == 'latest' && failure()
+      run: |
+        echo "::warning::Tests failed with latest dependencies. Consider updating pyproject.toml version constraints."
+        echo "Current versions that failed:"
+        pip list | grep -E "(jax|jaxlib|numpy|diffrax|pydantic|pykep)"
