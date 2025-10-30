@@ -12,7 +12,8 @@ from jax import jit
 from typing import Tuple, Optional
 import numpy as np
 
-from gtoc13 import elements_to_cartesian, MU_ALTAIRA, KMPAU
+from gtoc13 import elements_to_cartesian
+from gtoc13.constants import MU_ALTAIRA, KMPAU
 
 
 def get_body_state(body_id: int, epoch: float, bodies_data: dict):

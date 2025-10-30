@@ -18,15 +18,11 @@ class OrbitalElements(NamedTuple):
         Omega: Longitude of the ascending node (radians)
         omega: Argument of periapsis (radians)
         M0: Mean anomaly at epoch t=0 (radians)
-        mu_body: Gravitational parameter GM of the body (km³/s²)
-        radius: Physical radius of the body (km)
-        weight: Scientific weight for mission scoring
 
     Note:
         - For elliptical orbits: 0 ≤ e < 1
         - For parabolic orbits: e = 1
         - For hyperbolic orbits: e > 1
-        - Small bodies (asteroids/comets) typically have mu_body = 0
     """
     a: float  # semi-major axis (km)
     e: float  # eccentricity
@@ -34,6 +30,3 @@ class OrbitalElements(NamedTuple):
     Omega: float  # longitude of ascending node (rad)
     omega: float  # argument of periapsis (rad)
     M0: float  # mean anomaly at epoch (rad)
-    mu_body: float  # GM of the body (km^3/s^2)
-    radius: float  # radius of the body (km)
-    weight: float  # scientific weight

@@ -30,9 +30,8 @@ from pathlib import Path
 import pykep
 import numpy as np
 from gtoc13.bodies import bodies_data
+from gtoc13.constants import DAY, MU_ALTAIRA
 from gtoc13.astrodynamics import (
-    DAY,
-    MU_ALTAIRA,
     compute_score,
     patched_conic_flyby,
     seasonal_penalty,
