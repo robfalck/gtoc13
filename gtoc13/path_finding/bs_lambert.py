@@ -20,10 +20,13 @@ This produces progress updates per depth and prints the highest-scoring paths fo
 """
 
 from dataclasses import dataclass, replace
-from typing import Iterable, Optional, Tuple, Hashable
+from typing import Iterable, Optional, Tuple, Hashable, Any, Callable
 import math
 import argparse
 import functools
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 import pykep
 import numpy as np
 from gtoc13.bodies import bodies_data
@@ -40,6 +43,14 @@ from gtoc13.path_finding.beam_search import BeamSearch
 # --------------------- Data shapes ---------------------
 
 Vec3 = Tuple[float, float, float]
+@dataclass(frozen=True, slots=True)
+class LambertConfig:
+    dv_max: Optional[float]
+    vinf_max: Optional[float]
+    tof_max_days: Optional[float]
+    submission_time_days: float = 0.0
+
+
 
 
 def _get_body_elements(body_id: int):
@@ -81,12 +92,12 @@ ACTIVE_BODY_IDS: tuple[int, ...] = BASE_BODY_IDS
 ACTIVE_SEMI_MAJOR_AXES = BASE_SEMI_MAJOR_AXES.copy()
 ACTIVE_BODY_WEIGHTS = BASE_BODY_WEIGHTS.copy()
 
-# Default mission configuration; the CLI mutates these module-level values.
-SUBMISSION_TIME_DAYS = 0
-DV_PERIAPSIS_MAX = 1.0  # km/s threshold for admissible powered flybys
-VINF_MAX = 100.0  # km/s limit for hyperbolic excess (sanity check)
-TOF_MISSION_MAX_DAYS = 200.0*365.25  # global mission duration cap (days)
-TOF_SAMPLE_COUNT = 200  # number of sampled TOFs between bounds
+# Default constants for mission constraints and sampling.
+DEFAULT_SUBMISSION_TIME_DAYS = 0.0
+DEFAULT_DV_MAX = 1.0  # km/s threshold for admissible powered flybys
+DEFAULT_VINF_MAX = 100.0  # km/s limit for hyperbolic excess (sanity check)
+DEFAULT_TOF_MAX_DAYS = 200.0 * 365.25  # ~200 years, expressed in days
+DEFAULT_TOF_SAMPLE_COUNT = 200  # number of sampled TOFs between bounds
 DEFAULT_SCORE_MODE = "medium"
 DEPTH_BONUS_SCALE = 0.9
 NOVELTY_BONUS_SCALE = 0.2
@@ -96,6 +107,7 @@ DEPTH_MODE_ALPHA = 0.35
 DEPTH_MODE_REPEAT_FACTOR = 0.7
 DEPTH_MODE_QUICK_RATIO = 0.6
 DEPTH_MODE_QUICK_BONUS_SCALE = 0.1
+
 
 
 def _activate_body_subset(types: set[str]) -> None:
@@ -273,6 +285,8 @@ def _enumerate_lambert_solutions(
             except Exception:
                 nrev_list = []
 
+        # Track how many solutions we have recorded for each (direction, revolution)
+        # so that we can name the short/long (cw/ccw) branches deterministically.
         branch_counter: dict[tuple[bool, int], int] = {}
         for idx, (v1, v2) in enumerate(zip(v1_list, v2_list)):
             if idx >= len(v1_list) or idx >= len(v2_list):
@@ -321,7 +335,7 @@ def _continuation_bonus(turn_slack: float, vinf_mag: float, vinf_scale: float = 
     return 0.6 + 0.4 * mix
 
 
-def mission_score(path: "State") -> float:
+def mission_score(config: LambertConfig, path: "State") -> float:
     flybys = _flybys_from_path(path)
     if not flybys:
         return 0.0
@@ -329,10 +343,9 @@ def mission_score(path: "State") -> float:
         flybys=flybys,
         body_weights=ACTIVE_BODY_WEIGHTS,
         grand_tour_achieved=False,
-        submission_time_days=SUBMISSION_TIME_DAYS,
+        submission_time_days=config.submission_time_days,
     )
     return float(np.asarray(score))
-
 
 def _unit_vector(vec: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = np.linalg.norm(vec)
@@ -534,41 +547,36 @@ State = tuple[Encounter, ...]  # full path (immutable)
 
 # --------------------- Cheap expansion ---------------------
 
-def expand_fn(path: State) -> Iterable[Proposal]:
-    """
-    Enumerate candidate legs from the current path without solving Lambert.
-
-    The beam search calls this to obtain a coarse list of (next body, TOF) pairs.
-    Only lightweight heuristics are evaluated here so that the expensive Lambert
-    solve is deferred to the scoring phase.
-    """
-    last_body = path[-1].body if path else 2  # fallback if root missing
-    mission_start = path[0].t if path else 0.0
-    current_time = path[-1].t if path else mission_start
-    for tgt in ACTIVE_BODY_IDS:
-        if tgt == last_body:
-            continue
-        try:
-            tmin, tmax = hohmann_bounds_for_bodies(last_body, tgt)
-        except ValueError:
-            continue
-        if not math.isfinite(tmin) or not math.isfinite(tmax) or tmax <= tmin:
-            continue
-        tof_grid = np.linspace(tmin, tmax, TOF_SAMPLE_COUNT)
-        for tof_days in tof_grid:
-            tof_days = float(tof_days)
-            if tof_days <= 0.0:
+def make_expand_fn(config: LambertConfig, tof_sample_count: int) -> Callable[[State], Iterable[Proposal]]:
+    """Return a cheap proposal generator bound to the given configuration."""
+    def expand(path: State) -> Iterable[Proposal]:
+        last_body = path[-1].body if path else 2  # fallback if root missing
+        mission_start = path[0].t if path else 0.0
+        current_time = path[-1].t if path else mission_start
+        for tgt in ACTIVE_BODY_IDS:
+            if tgt == last_body:
                 continue
-            arrival_time = current_time + tof_days
-            total_duration = arrival_time - mission_start
-            if TOF_MISSION_MAX_DAYS is not None and total_duration > TOF_MISSION_MAX_DAYS:
+            try:
+                tmin, tmax = hohmann_bounds_for_bodies(last_body, tgt)
+            except ValueError:
                 continue
-            yield Proposal(body=tgt, tof=tof_days)
-
+            if not math.isfinite(tmin) or not math.isfinite(tmax) or tmax <= tmin:
+                continue
+            tof_grid = np.linspace(tmin, tmax, tof_sample_count)
+            for tof_days in tof_grid:
+                tof_days = float(tof_days)
+                if tof_days <= 0.0:
+                    continue
+                arrival_time = current_time + tof_days
+                total_duration = arrival_time - mission_start
+                if config.tof_max_days is not None and total_duration > config.tof_max_days:
+                    continue
+                yield Proposal(body=tgt, tof=tof_days)
+    return expand
 
 # --------------------- Heavy scoring/resolution ---------------------
 
-def score_fn_dispatch(mode: str, path: State, prop: Proposal):
+def score_fn_dispatch(config: LambertConfig, mode: str, path: State, prop: Proposal):
     """
     Heavy evaluation step invoked by the beam.
 
@@ -589,12 +597,12 @@ def score_fn_dispatch(mode: str, path: State, prop: Proposal):
 
     # Child epoch and Lambert solve
     t1 = parent.t + prop.tof
-    if TOF_MISSION_MAX_DAYS is not None:
+    if config.tof_max_days is not None:
         mission_start = parent_path[0].t if parent_path else 0.0
-        if (t1 - mission_start) > TOF_MISSION_MAX_DAYS:
+        if (t1 - mission_start) > config.tof_max_days:
             return float("-inf")
     try:
-        child_contrib, new_path = resolve_lambert_leg(parent_path, prop, t1, mode)
+        child_contrib, new_path = resolve_lambert_leg(config, parent_path, prop, t1, mode)
     except InfeasibleLeg:
         return float("-inf")  # prune this candidate
 
@@ -647,7 +655,7 @@ def ephemeris_position(body: int, t_days: float) -> Vec3:
     return tuple(float(x) for x in r_vec)
 
 
-def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mode: str):
+def resolve_lambert_leg(config: LambertConfig, parent_path: State, prop: Proposal, t_arrival: float, mode: str):
     """
     Use PyKEP Lambert solutions (short/long, up to 2 revs) to build child encounters.
     Raises InfeasibleLeg if no feasible solution survives pruning.
@@ -671,6 +679,7 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
     if not solutions:
         raise InfeasibleLeg("Lambert solver did not converge.")
 
+    # Keep the child with the highest incremental contribution; ties resolved by score.
     best: Optional[Tuple[float, State]] = None
 
     for sol in solutions:
@@ -679,10 +688,11 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
 
         vinf_out = float(np.linalg.norm(vinf_out_vec))
         vinf_in = float(np.linalg.norm(vinf_in_vec))
+        vinf_cap = config.vinf_max
         if (
             not math.isfinite(vinf_out)
             or not math.isfinite(vinf_in)
-            or (VINF_MAX is not None and (vinf_out > VINF_MAX or vinf_in > VINF_MAX))
+            or (vinf_cap is not None and (vinf_out > vinf_cap or vinf_in > vinf_cap))
         ):
             continue
 
@@ -692,7 +702,8 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
         flyby_valid, flyby_altitude, dv_mag, dv_vec = evaluate_flyby(
             parent.body, parent.vinf_in_vec, vinf_out_vec_tuple
         )
-        if dv_mag is not None and DV_PERIAPSIS_MAX is not None and dv_mag > DV_PERIAPSIS_MAX:
+        # Discard Lambert branches that would require more than the allowed powered flyby impulse.
+        if dv_mag is not None and config.dv_max is not None and dv_mag > config.dv_max:
             continue
 
         parent_resolved = replace(
@@ -723,7 +734,10 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
 
         if mode == "mission":
             candidate_path = prefix + (provisional_child,)
-            total_score = mission_score(candidate_path) / (prop.tof/TOF_MISSION_MAX_DAYS)  # divide by TOF to discourage long transfers to single bodies
+            total_score = mission_score(config, candidate_path)
+            if config.tof_max_days:
+                scale = max(prop.tof / config.tof_max_days, 1e-6)
+                total_score /= scale
             child_contrib = total_score - parent_resolved.J_total
             child = replace(provisional_child, J_total=total_score)
         elif mode == "medium":
@@ -741,6 +755,7 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
                 continue
             weight = ACTIVE_BODY_WEIGHTS.get(provisional_child.body, 0.0)
             vinf_mag = provisional_child.vinf_in or 1e-6
+            # Simple heuristic: reward high-weight bodies, penalise long/energetic legs.
             base = weight / (tof_days * vinf_mag)
             depth_index = len(prefix)
             depth_bonus = DEPTH_BONUS_SCALE * max(1.0, float(depth_index))
@@ -755,6 +770,7 @@ def resolve_lambert_leg(parent_path: State, prop: Proposal, t_arrival: float, mo
             weight = ACTIVE_BODY_WEIGHTS.get(provisional_child.body, 0.0)
             vinf_mag = provisional_child.vinf_in or 1e-6
             vinf_mag = max(vinf_mag, 1e-6)
+            # Encourage short, low-energy legs but modulate via depth + novelty bonuses.
             base = weight / (tof_days * vinf_mag) if weight > 0.0 else 0.0
 
             depth_index = len(prefix)
@@ -805,7 +821,6 @@ def _format_encounter(enc: Encounter, idx: int) -> str:
 
 
 def run_cli() -> None:
-    global DV_PERIAPSIS_MAX, VINF_MAX, TOF_MISSION_MAX_DAYS, TOF_SAMPLE_COUNT
     parser = argparse.ArgumentParser(
         description="Beam search using Lambert arcs and patched-conic flybys."
     )
@@ -834,19 +849,19 @@ def run_cli() -> None:
     parser.add_argument(
         "--dv-max",
         type=float,
-        default=DV_PERIAPSIS_MAX,
+        default=DEFAULT_DV_MAX,
         help="Maximum allowed periapsis Δv (km/s). Use a negative value to disable pruning.",
     )
     parser.add_argument(
         "--vinf-max",
         type=float,
-        default=VINF_MAX,
+        default=DEFAULT_VINF_MAX,
         help="Maximum allowable |v∞| (km/s) before pruning (negative disables).",
     )
     parser.add_argument(
         "--tof-max",
         type=float,
-        default=TOF_MISSION_MAX_DAYS,
+        default=DEFAULT_TOF_MAX_DAYS,
         help="Maximum total mission duration (days). Use a negative value to disable.",
     )
     parser.add_argument(
@@ -879,10 +894,23 @@ def run_cli() -> None:
         default="planets,asteroids,comets",
         help="Comma-separated list of body categories to include (planets, asteroids, comets).",
     )
+    parser.add_argument("--resume-file", default=None, help="Path to a prior JSON results file to resume from.")
+    parser.add_argument("--resume-rank", type=int, default=1, help="Rank (1-indexed) of the solution to resume from.")
+    parser.add_argument("--resume-index", type=int, default=-1, help="Encounter index within the ranked solution (-1 for last).")
+    parser.add_argument(
+        "--output-file",
+        default=None,
+        help="Optional path for JSON results (defaults to results/beam/bs_<timestamp>.json).",
+    )
+    parser.add_argument(
+        "--no-output-file",
+        action="store_true",
+        help="Disable JSON results export.",
+    )
     parser.add_argument(
         "--tof-samples",
         type=int,
-        default=TOF_SAMPLE_COUNT,
+        default=DEFAULT_TOF_SAMPLE_COUNT,
         help="Number of sampled TOFs per candidate leg.",
     )
     parser.add_argument(
@@ -891,10 +919,55 @@ def run_cli() -> None:
         help="Suppress per-depth progress logging.",
     )
     args = parser.parse_args()
-    TOF_SAMPLE_COUNT = max(1, int(args.tof_samples))
-    DV_PERIAPSIS_MAX = None if args.dv_max is not None and args.dv_max < 0 else args.dv_max
-    VINF_MAX = None if args.vinf_max is not None and args.vinf_max < 0 else args.vinf_max
-    TOF_MISSION_MAX_DAYS = None if args.tof_max is not None and args.tof_max < 0 else args.tof_max
+    tof_sample_count = max(1, int(args.tof_samples))
+    config = LambertConfig(
+        dv_max=None if args.dv_max is not None and args.dv_max < 0 else args.dv_max,
+        vinf_max=None if args.vinf_max is not None and args.vinf_max < 0 else args.vinf_max,
+        tof_max_days=None if args.tof_max is not None and args.tof_max < 0 else args.tof_max,
+        submission_time_days=DEFAULT_SUBMISSION_TIME_DAYS,
+    )
+    resume_data = None
+    if args.resume_file:
+        resume_path = Path(args.resume_file)
+        if not resume_path.is_file():
+            raise SystemExit(f"Resume file not found: {resume_path}")
+        with resume_path.open("r", encoding="utf-8") as fh:
+            resume_payload = json.load(fh)
+        solutions = resume_payload.get("solutions") or []
+        if not solutions:
+            raise SystemExit("Resume file contains no solutions.")
+        rank_idx = max(0, min(len(solutions) - 1, args.resume_rank - 1))
+        solution = solutions[rank_idx]
+        encounters = solution.get("encounters") or []
+        if not encounters:
+            raise SystemExit("Selected solution has no encounters.")
+        enc_idx = args.resume_index if args.resume_index >= 0 else len(encounters) - 1
+        enc_idx = max(0, min(len(encounters) - 1, enc_idx))
+        resume_encounter = encounters[enc_idx]
+        resume_data = {
+            "body": int(resume_encounter["body_id"]),
+            "epoch": float(resume_encounter["epoch_days"]),
+            "vinf_vec": resume_encounter.get("vinf_in_vec_km_s"),
+        }
+        print("Resuming from", resume_path, f"(rank={rank_idx + 1}, encounter={enc_idx})", f"body={resume_data['body']} epoch={resume_data['epoch']:.3f} days", flush=True)
+    if resume_data is not None:
+        args.start_body = resume_data["body"]
+        args.start_epoch = resume_data["epoch"]
+        vec = resume_data["vinf_vec"]
+        if vec is not None:
+            args.start_vinf = tuple(float(x) for x in vec)
+
+    if args.no_output_file:
+        output_path: Optional[Path] = None
+    else:
+        if args.output_file:
+            output_path = Path(args.output_file)
+        else:
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+            output_path = (
+                Path("results") / "beam" /
+                f"bs_{args.score_mode}_bw{args.beam_width}_d{args.max_depth}_top{args.top_k}_{timestamp}.json"
+            )
 
     type_aliases = {
         "planet": "planet",
@@ -971,22 +1044,23 @@ def run_cli() -> None:
             summary = (
                 f"Beam search start: beam_width={args.beam_width}, max_depth={args.max_depth}, "
                 f"start_body={args.start_body}, score_mode={args.score_mode}, "
-                f"dv_max={args.dv_max}, vinf_max={args.vinf_max}, tof_max={args.tof_max}, "
-                f"tof_samples={TOF_SAMPLE_COUNT}"
-                f", body_types={args.body_types}"
+                f"dv_max={config.dv_max}, vinf_max={config.vinf_max}, tof_max={config.tof_max_days}, "
+                f"tof_samples={tof_sample_count}, body_types={args.body_types}"
             )
             print(summary, flush=True)
             return
+        current_clock = datetime.now(timezone.utc).strftime("%H:%M:%S")
         msg = (
-            f"[depth {depth}] parents={survivors} expansions={expansions} "
-            f"depth_time={depth_time:.3f}s total_elapsed={total_elapsed:.3f}s"
+            f"[depth {depth}] | parents={survivors} | expansions={expansions} "
+            f"| depth_time={depth_time:.0f}s | total_elapsed={(total_elapsed)/60:.2f}min | clock={current_clock}"
         )
         print(msg, flush=True)
 
-    selected_score_fn = functools.partial(score_fn_dispatch, args.score_mode)
+    expand = make_expand_fn(config, tof_sample_count)
+    selected_score_fn = functools.partial(score_fn_dispatch, config, args.score_mode)
 
     beam = BeamSearch(
-        expand_fn=expand_fn,
+        expand_fn=expand,
         score_fn=selected_score_fn,
         beam_width=args.beam_width,
         max_depth=args.max_depth,
@@ -1004,6 +1078,9 @@ def run_cli() -> None:
     final_nodes.sort(key=lambda n: n.cum_score, reverse=True)
     top = final_nodes[: args.top_k]
 
+    # Collect full solution records for optional JSON export.
+    solutions_payload: list[dict[str, Any]] = []
+
     print(f"Beam search complete. Displaying top {len(top)} nodes (beam width={args.beam_width}).")
     for rank, node in enumerate(top, start=1):
         path_state: State = node.state
@@ -1012,16 +1089,83 @@ def run_cli() -> None:
         if not path_state:
             print("    <empty path>")
             continue
+        mission_start = path_state[0].t
+        prev_t = None
+        encounters_payload: list[dict[str, Any]] = []
+
         for idx, enc in enumerate(path_state):
             print(_format_encounter(enc, idx))
+            leg_tof = 0.0 if prev_t is None else enc.t - prev_t
+            mission_tof = enc.t - mission_start
+            body_obj = bodies_data.get(enc.body)
+            encounters_payload.append(
+                {
+                    "index": idx,
+                    "body_id": enc.body,
+                    "body_name": getattr(body_obj, "name", str(enc.body)),
+                    "epoch_days": enc.t,
+                    "leg_tof_days": leg_tof,
+                    "mission_tof_days": mission_tof,
+                    "position_km": [float(x) for x in enc.r],
+                    "vinf_in_mag_km_s": enc.vinf_in,
+                    "vinf_in_vec_km_s": list(enc.vinf_in_vec) if enc.vinf_in_vec is not None else None,
+                    "vinf_out_mag_km_s": enc.vinf_out,
+                    "vinf_out_vec_km_s": list(enc.vinf_out_vec) if enc.vinf_out_vec is not None else None,
+                    "flyby_valid": enc.flyby_valid,
+                    "flyby_altitude_km": enc.flyby_altitude,
+                    "periapsis_dv_mag_km_s": enc.dv_periapsis,
+                    "periapsis_dv_vec_km_s": list(enc.dv_periapsis_vec) if enc.dv_periapsis_vec is not None else None,
+                    "body_weight": ACTIVE_BODY_WEIGHTS.get(enc.body),
+                    "cumulative_score": enc.J_total,
+                }
+            )
+            prev_t = enc.t
 
-        # Aggregate periapsis Δv
         dv_sum = sum(
             enc.dv_periapsis or 0.0
             for enc in path_state
             if enc.dv_periapsis is not None
         )
         print(f"    Total periapsis Δv along path: {dv_sum:.3f} km/s")
+
+        total_tof = path_state[-1].t - mission_start if path_state else 0.0
+        solutions_payload.append(
+            {
+                "rank": rank,
+                "node_id": node.id,
+                "score": node.cum_score,
+                "depth": path_depth,
+                "total_tof_days": total_tof,
+                "total_periapsis_dv_km_s": dv_sum,
+                "encounters": encounters_payload,
+            }
+        )
+
+    if output_path is not None and solutions_payload:
+        # Persist run metadata plus the full encounter history for each solution.
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "config": {
+                "start_body": args.start_body,
+                "start_epoch_days": args.start_epoch,
+                "start_vinf": list(args.start_vinf) if args.start_vinf is not None else None,
+                "beam_width": args.beam_width,
+                "max_depth": args.max_depth,
+                "score_mode": args.score_mode,
+                "dv_max": config.dv_max,
+                "vinf_max": config.vinf_max,
+                "tof_max_days": config.tof_max_days,
+                "output_file": str(output_path),
+                "tof_samples": tof_sample_count,
+                "body_types": args.body_types,
+                "top_k": args.top_k,
+            },
+            "solutions": solutions_payload,
+        }
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+        print(f"\nResults written to {output_path}")
 
 
 if __name__ == '__main__':
