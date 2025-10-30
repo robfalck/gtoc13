@@ -35,8 +35,8 @@ def orbital_period(body: Body):
 
 ## Generate position tables for just the bodies
 discrete_rs = dict()
-To = 0.5 * YEAR
-Tf = 6 * YEAR  # years in seconds
+To = 5 * YEAR
+Tf = 15 * YEAR  # years in seconds
 
 for b_idx, body in bodies_data.items():
     if body.is_planet() or body.name == "Yandi":
@@ -141,7 +141,7 @@ with Timer():
     m.h_packing_con = pyo.ConstraintList()
 
     for h in m.h:
-        m.h_packing_con.add(pyo.quicksum(m.x_kth[kt, 1] for kt in kt_idxs) <= 1)
+        m.h_packing_con.add(pyo.quicksum(m.x_kth[kt, h] for kt in kt_idxs) <= 1)
 
 print("...create h monotonic time constraints...")
 with Timer():
@@ -163,7 +163,7 @@ with Timer():
     for kij in kij_idxs:
         k, i, j = kij
         if old_k != k or old_i != i:
-            flyby_terms[k][i] = [0]
+            flyby_terms[k][i] = []
         dot_prods = np.clip(np.dot(m.rfs[k, i], m.rfs[k, j]), -1.0, 1.0)
         angles_deg = np.arccos(dot_prods) * 180.0 / np.pi
         exp_term = np.exp(-(angles_deg**2) / 50.0) * m.y_kij1[kij]
@@ -187,8 +187,19 @@ with Timer():
 
 
 # Solver setup
+# from solve first arc, the intial body is Planet X at To = 5 years.
+m.x_kth[10, 0, 1].fix(1)
+
 solver = pyo.SolverFactory("scip", solver_io="nl")
 results = solver.solve(m, tee=True)
 
 if results.solver.termination_condition == TerminationCondition.infeasible:
     print("Infeasible, sorry :(")
+else:
+    sequence = []
+    for kt in kt_idxs:
+        k, t = kt
+        for h in m.h:
+            value = pyo.value(m.x_kth[kt, h])
+            if value > 0:
+                sequence.append((k, discrete_rs[k]["ts"][t] / SPTU))
