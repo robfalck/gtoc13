@@ -30,34 +30,122 @@ class Body(pydantic.BaseModel):
     weight: float
     elements: OrbitalElements
 
-    def get_state(self, epoch: float):
+    def get_state(self, epoch: float, time_units: str = 's', distance_units: str = 'km'):
         """
         Get the Cartesian state (position and velocity) of the body at a given epoch.
 
         This method is JAX-compatible and can be used with jax.jit, jax.vmap, etc.
 
         Args:
-            epoch: Time in seconds past t=0 (can be a JAX array)
+            epoch: Time past t=0 in the units specified by time_units (can be a JAX array)
+            time_units: Units of the input epoch. Options:
+                - 's' or 'seconds': epoch in seconds (default)
+                - 'year' or 'years': epoch in years
+                - 'TU': epoch in canonical time units
+            distance_units: Units for the output position and velocity. Options:
+                - 'km': position in km, velocity in km/time_units (default)
+                - 'AU': position in AU, velocity in AU/time_units
+                - 'DU': position in DU, velocity in DU/time_units (same as AU)
 
         Returns:
-            SpacecraftState with position (km) and velocity (km/s) vectors
+            CartesianState with position and velocity vectors in the specified units
             (JAX arrays if epoch is a JAX array)
+            Note: velocity is returned in distance_units/time_units
 
         Examples:
-            >>> # Single epoch
-            >>> state = body.get_state(0.0)
+            >>> # Single epoch in seconds (default)
+            >>> state = body.get_state(0.0)  # velocity in km/s
+
+            >>> # Epoch in years
+            >>> state = body.get_state(5.0, time_units='year')  # velocity in km/year
+
+            >>> # Get state in AU
+            >>> state = body.get_state(0.0, distance_units='AU')  # velocity in AU/s
+
+            >>> # Canonical units
+            >>> state = body.get_state(1.0, time_units='TU', distance_units='DU')  # velocity in DU/TU
 
             >>> # JAX array of epochs
             >>> import jax.numpy as jnp
-            >>> epochs = jnp.linspace(0, YEAR, 100)
-            >>> states = jax.vmap(body.get_state)(epochs)
+            >>> epochs = jnp.linspace(0, 1, 100)  # 0 to 1 year
+            >>> states = jax.vmap(lambda t: body.get_state(t, time_units='year'))(epochs)
 
             >>> # JIT-compiled version
-            >>> get_state_jit = jax.jit(body.get_state)
-            >>> state = get_state_jit(5.0 * YEAR)
+            >>> get_state_jit = jax.jit(lambda t: body.get_state(t, time_units='year'))
+            >>> state = get_state_jit(5.0)
         """
         from gtoc13 import elements_to_cartesian
-        return elements_to_cartesian(self.elements, epoch)
+        from gtoc13.constants import YEAR, SPTU, KMPAU
+
+        # Convert epoch to seconds
+        if time_units in ('s', 'seconds'):
+            epoch_seconds = epoch
+            time_factor = 1.0  # velocity already in units/s
+        elif time_units in ('year', 'years'):
+            epoch_seconds = epoch * YEAR
+            time_factor = YEAR  # convert velocity from units/s to units/year
+        elif time_units == 'TU':
+            epoch_seconds = epoch * SPTU
+            time_factor = SPTU  # convert velocity from units/s to units/TU
+        else:
+            raise ValueError(f"Invalid time_units '{time_units}'. Must be one of: 's', 'year', 'TU'")
+
+        # Get state in km and km/s
+        state = elements_to_cartesian(self.elements, epoch_seconds)
+
+        # Convert to requested distance and time units
+        if distance_units == 'km':
+            # Position already in km
+            # Convert velocity from km/s to km/time_units
+            v_converted = state.v * time_factor
+            return state._replace(v=v_converted)
+        elif distance_units in ('AU', 'DU'):
+            # Convert position from km to AU/DU
+            # Convert velocity from km/s to (AU or DU)/time_units
+            r_converted = state.r / KMPAU
+            v_converted = (state.v / KMPAU) * time_factor
+            return state._replace(r=r_converted, v=v_converted)
+        else:
+            raise ValueError(f"Invalid distance_units '{distance_units}'. Must be one of: 'km', 'AU', 'DU'")
+
+    def get_period(self, units: str = 'year') -> float:
+        """
+        Compute the orbital period of the body.
+
+        The period is calculated using Kepler's third law:
+        T = 2π√(a³/μ)
+
+        Args:
+            units: Units for the returned period. Options:
+                - 's' or 'seconds': Period in seconds
+                - 'year' or 'years': Period in years (default)
+                - 'TU': Period in canonical time units
+
+        Returns:
+            Orbital period in the specified units
+
+        Examples:
+            >>> body = bodies_data[1]  # Vulcan
+            >>> period_years = body.get_period('year')
+            >>> period_seconds = body.get_period('s')
+            >>> period_TU = body.get_period('TU')
+        """
+        from gtoc13.constants import MU_ALTAIRA, YEAR, SPTU
+
+        # Calculate period in seconds using Kepler's third law
+        a = self.elements.a
+        period_seconds = 2.0 * np.pi * np.sqrt(a**3 / MU_ALTAIRA)
+
+        # Convert to requested units
+        units_lower = units.lower()
+        if units_lower in ('s', 'seconds'):
+            return period_seconds
+        elif units_lower in ('year', 'years'):
+            return period_seconds / YEAR
+        elif units_lower == 'tu':
+            return period_seconds / SPTU
+        else:
+            raise ValueError(f"Invalid units '{units}'. Must be one of: 's', 'year', 'TU'")
 
     def is_planet(self) -> bool:
         """Check if this body is a planet (has non-zero mass)"""
@@ -141,17 +229,14 @@ def load_bodies_data() -> dict[int, Body]:
                     radius = 0.0
                     name = f"{config['name_prefix']}{body_id}"
 
-                # Create orbital elements
+                # Create orbital elements (only the 6 classical elements)
                 elements = OrbitalElements(
                     a=float(row['Semi-Major Axis (km)']),
                     e=float(row['Eccentricity ()']),
                     i=np.deg2rad(float(row['Inclination (deg)'])),
                     Omega=np.deg2rad(float(row['Longitude of the Ascending Node (deg)'])),
                     omega=np.deg2rad(float(row['Argument of Periapsis (deg)'])),
-                    M0=np.deg2rad(float(row[m0_key])),
-                    mu_body=mu,
-                    radius=radius,
-                    weight=float(row['Weight ()'])
+                    M0=np.deg2rad(float(row[m0_key]))
                 )
 
                 # Create Body object

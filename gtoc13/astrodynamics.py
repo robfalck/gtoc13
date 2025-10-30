@@ -7,22 +7,11 @@ import numpy as np
 
 from .orbital_elements import OrbitalElements
 from .cartesian_state import CartesianState
-
-# Constants
-KMPAU = 149597870.691  # km
-MU_ALTAIRA = 139348062043.343  # km^3/s^2
-DAY = 86400.0  # seconds
-YEAR = 365.25 * DAY  # seconds
-
-KMPDU = KMPAU  # 1 AU in km
-SPTU = jnp.sqrt(KMPDU**3 / MU_ALTAIRA)  # Time unit in seconds
-YPTU = SPTU / YEAR
-
-# Solar sail parameters
-C_FLUX = 5.4026e-6  # N/m^2 at 1 AU
-R0 = 1.0 * KMPAU  # Reference distance (1 AU in km)
-SAIL_AREA = 15000.0  # m^2
-SPACECRAFT_MASS = 500.0  # kg
+from .constants import (
+    KMPAU, MU_ALTAIRA, DAY, YEAR,
+    KMPDU, SPTU, YPTU,
+    C_FLUX, R0, SAIL_AREA, SPACECRAFT_MASS
+)
 
 
 @jit
@@ -104,72 +93,6 @@ def elements_to_cartesian(elements: OrbitalElements, t: float) -> CartesianState
     vz = v_mag * cos_theta_omega_gamma * sin_i
     
     return CartesianState(r=jnp.array([x, y, z]), v=jnp.array([vx, vy, vz]))
-
-
-@jit
-def solar_sail_acceleration(r: jnp.ndarray, u_n: jnp.ndarray) -> jnp.ndarray:
-    """
-    Calculate solar sail acceleration.
-    
-    Args:
-        r: spacecraft position relative to Altaira (km)
-        u_n: sail normal unit vector (must point towards sun, cone angle in [0, 90])
-    
-    Returns:
-        acceleration vector (km/s^2)
-    """
-    r_mag = jnp.linalg.norm(r)
-    u_r = r / r_mag  # unit vector from spacecraft to sun
-    
-    cos_alpha = jnp.dot(u_n, u_r)
-    
-    # Ensure cone angle is valid (should be enforced by caller)
-    cos_alpha = jnp.clip(cos_alpha, 0.0, 1.0)
-    
-    # Acceleration magnitude
-    coeff = -2.0 * C_FLUX * SAIL_AREA / SPACECRAFT_MASS
-    a_mag = coeff * (R0 / r_mag)**2 * cos_alpha**2
-    
-    return a_mag * u_n
-
-
-@jit
-def keplerian_derivatives(t: float, y: jnp.ndarray, args: None) -> jnp.ndarray:
-    """
-    Derivatives for pure Keplerian motion (no solar sail).
-    y = [x, y, z, vx, vy, vz]
-    """
-    r = y[:3]
-    v = y[3:]
-    r_mag = jnp.linalg.norm(r)
-    
-    a = -MU_ALTAIRA * r / r_mag**3
-    
-    return jnp.concatenate([v, a])
-
-
-@jit
-def solar_sail_derivatives(t: float, y: jnp.ndarray, args: Tuple) -> jnp.ndarray:
-    """
-    Derivatives including solar sail acceleration.
-    y = [x, y, z, vx, vy, vz]
-    args = (u_n,) where u_n is the sail normal unit vector
-    """
-    r = y[:3]
-    v = y[3:]
-    r_mag = jnp.linalg.norm(r)
-    
-    u_n = args[0]
-    
-    # Gravitational acceleration
-    a_grav = -MU_ALTAIRA * r / r_mag**3
-    
-    # Solar sail acceleration
-    a_sail = solar_sail_acceleration(r, u_n)
-    
-    a_total = a_grav + a_sail
-    
-    return jnp.concatenate([v, a_total])
 
 
 @jit
@@ -351,6 +274,8 @@ def compute_score(
 
 # Example usage demonstration
 if __name__ == "__main__":
+    from .odes import solar_sail_acceleration
+
     print("GTOC13 JAX Simulation Framework")
     print("=" * 50)
     
@@ -361,10 +286,7 @@ if __name__ == "__main__":
         i=jnp.deg2rad(2.0),
         Omega=jnp.deg2rad(45.0),
         omega=jnp.deg2rad(90.0),
-        M0=jnp.deg2rad(0.0),
-        mu_body=1e8,
-        radius=70000.0,
-        weight=10.0
+        M0=jnp.deg2rad(0.0)
     )
     
     # Convert to Cartesian at t=0

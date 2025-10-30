@@ -5,10 +5,10 @@ from pathlib import Path
 from scipy.optimize import brentq
 
 from gtoc13 import (
-    KMPDU, SPTU, YPTU, YEAR,
     bodies_data, lambert_tof, lambert_v,
     GTOC13Solution, create_conic
 )
+from gtoc13.constants import KMPDU, SPTU, YPTU, YEAR
 
 print("Solving Lambert's problem for multiple target times")
 print("=" * 70)

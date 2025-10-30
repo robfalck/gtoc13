@@ -14,10 +14,8 @@ from gtoc13 import (
     OrbitalElements,
     elements_to_cartesian,
     AU,
-    MU_ALTAIRA,
-    YEAR,
-    DAY
 )
+from gtoc13.constants import MU_ALTAIRA, YEAR, DAY
 
 
 def compute_orbit_points(elements: OrbitalElements, n_points: int = 100) -> np.ndarray:

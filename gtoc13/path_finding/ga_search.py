@@ -34,7 +34,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 from scipy.optimize import Bounds, basinhopping, differential_evolution
 
-from gtoc13.astrodynamics import DAY
+from gtoc13.constants import DAY
 from gtoc13.bodies import bodies_data
 from gtoc13.path_finding import bs_lambert
 
