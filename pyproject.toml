@@ -31,7 +31,6 @@ dependencies = [
     "numpy>=1.20.0",
     "diffrax>=0.3.0",
     "pydantic>=2.0.0",
-    "pykep>=2.0.0",
 ]
 
 [project.optional-dependencies]
