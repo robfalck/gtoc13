@@ -14,23 +14,51 @@ from gtoc13 import (
     OrbitalElements,
     elements_to_cartesian,
     AU,
+    MU_ALTAIRA,
+    YEAR,
+    DAY
 )
-from gtoc13.constants import MU_ALTAIRA, YEAR, DAY
 
 
 def compute_orbit_points(elements: OrbitalElements, n_points: int = 100) -> np.ndarray:
     """
-    Compute points along an orbit for visualization.
+    Compute points along an orbit for visualization using uniformly spaced true anomaly.
+    Directly computes positions from orbital elements to avoid numerical issues.
     Returns array of shape (n_points, 3) with [x, y, z] positions in AU.
     """
-    # Compute one full orbital period
-    period = 2 * np.pi * np.sqrt(elements.a**3 / MU_ALTAIRA)
-    times = np.linspace(0, period, n_points)
+    a, e, i, Omega, omega = elements.a, elements.e, elements.i, elements.Omega, elements.omega
+
+    # Uniformly spaced true anomalies (endpoint=False to avoid duplicate at 0/2π)
+    true_anomalies = np.linspace(0, 2 * np.pi, n_points, endpoint=False)
+
+    # Precompute rotation matrix elements
+    cos_Omega = np.cos(Omega)
+    sin_Omega = np.sin(Omega)
+    cos_i = np.cos(i)
+    sin_i = np.sin(i)
+    cos_omega = np.cos(omega)
+    sin_omega = np.sin(omega)
 
     positions = []
-    for t in times:
-        state = elements_to_cartesian(elements, float(t))
-        positions.append(np.array(state.r))
+    for nu in true_anomalies:
+        # Compute radius from true anomaly
+        r_mag = a * (1.0 - e**2) / (1.0 + e * np.cos(nu))
+
+        # Position in orbital plane (perifocal frame)
+        x_orb = r_mag * np.cos(nu)
+        y_orb = r_mag * np.sin(nu)
+
+        # Rotate from orbital plane to inertial frame
+        # R = R3(-Omega) * R1(-i) * R3(-omega)
+        x = (cos_Omega * cos_omega - sin_Omega * sin_omega * cos_i) * x_orb + \
+            (-cos_Omega * sin_omega - sin_Omega * cos_omega * cos_i) * y_orb
+
+        y = (sin_Omega * cos_omega + cos_Omega * sin_omega * cos_i) * x_orb + \
+            (-sin_Omega * sin_omega + cos_Omega * cos_omega * cos_i) * y_orb
+
+        z = (sin_omega * sin_i) * x_orb + (cos_omega * sin_i) * y_orb
+
+        positions.append(np.array([x, y, z]))
 
     # Convert to numpy array and scale to AU
     return np.array(positions) / AU
@@ -128,6 +156,9 @@ def create_animation(
     # Zoom state
     zoom_state = {'scale': 1.0}
 
+    # Selected body state
+    selected_body_state = {'body': None, 'body_type': None}
+
     def on_scroll(event):
         """Handle mouse wheel scroll for zooming"""
         # Get the current scaling factor
@@ -141,8 +172,8 @@ def create_animation(
             # Zoom out
             scale *= 1.1
 
-        # Limit zoom range
-        scale = max(0.1, min(scale, 10.0))
+        # Limit zoom range (allow much closer zoom)
+        scale = max(0.001, min(scale, 100.0))
         zoom_state['scale'] = scale
 
         # Update axis limits
@@ -156,6 +187,115 @@ def create_animation(
     # Connect scroll event
     fig.canvas.mpl_connect('scroll_event', on_scroll)
 
+    def on_click(event):
+        """Handle mouse click to select a body"""
+        if event.inaxes != ax:
+            return
+
+        # Only process left mouse button clicks
+        if event.button != 1:
+            return
+
+        # Get current positions of all bodies at current time
+        t = time_rate_state['current_time']
+
+        # Get all body positions
+        all_bodies = []
+        all_positions = []
+
+        # Add planets
+        for p in planets:
+            state = elements_to_cartesian(p.elements, float(t))
+            pos = np.array(state.r) / AU
+            all_bodies.append(p)
+            all_positions.append(pos)
+
+        # Add asteroids
+        for a in asteroids:
+            state = elements_to_cartesian(a.elements, float(t))
+            pos = np.array(state.r) / AU
+            all_bodies.append(a)
+            all_positions.append(pos)
+
+        # Add comets
+        for c in comets:
+            state = elements_to_cartesian(c.elements, float(t))
+            pos = np.array(state.r) / AU
+            all_bodies.append(c)
+            all_positions.append(pos)
+
+        if not all_positions:
+            return
+
+        all_positions = np.array(all_positions)
+
+        # Convert click coordinates to data coordinates
+        # For 3D plots, we need to project to 2D screen space
+        try:
+            from mpl_toolkits.mplot3d import proj3d
+
+            # Get mouse position in display coordinates
+            if event.xdata is None or event.ydata is None:
+                return
+
+            # Project all 3D positions to 2D display coordinates
+            x2d_disp, y2d_disp = [], []
+            for pos in all_positions:
+                # Project 3D point to 2D
+                x_proj, y_proj, _ = proj3d.proj_transform(pos[0], pos[1], pos[2], ax.get_proj())
+
+                # Transform from axes coordinates to display coordinates
+                x_disp, y_disp = ax.transData.transform((x_proj, y_proj))
+                x2d_disp.append(x_disp)
+                y2d_disp.append(y_disp)
+
+            x2d_disp = np.array(x2d_disp)
+            y2d_disp = np.array(y2d_disp)
+
+            # Get click position in display coordinates
+            click_x_disp, click_y_disp = event.x, event.y
+
+            # Find closest body in 2D display space (pixels)
+            distances = np.sqrt((x2d_disp - click_x_disp)**2 + (y2d_disp - click_y_disp)**2)
+            closest_idx = np.argmin(distances)
+
+            # Debug print
+            print(f"Click at ({click_x_disp:.1f}, {click_y_disp:.1f}), closest body at ({x2d_disp[closest_idx]:.1f}, {y2d_disp[closest_idx]:.1f}), distance={distances[closest_idx]:.1f}px")
+
+            # Only select if click is reasonably close (within threshold in pixels)
+            if distances[closest_idx] < 30:  # 30 pixels threshold
+                selected_body = all_bodies[closest_idx]
+                selected_body_state['body'] = selected_body
+
+                # Update info text
+                period_years = selected_body.get_period(units='year')
+                info_str = (
+                    f"Selected Body:\n"
+                    f"  Name:   {selected_body.name}\n"
+                    f"  ID:     {selected_body.id}\n"
+                    f"  Radius: {selected_body.radius:.2f} km\n"
+                    f"  Weight: {selected_body.weight:.4f}\n"
+                    f"  μ:      {selected_body.mu:.6e} km³/s²\n"
+                    f"  Period: {period_years:.2f} years"
+                )
+                info_text.set_text(info_str)
+                fig.canvas.draw_idle()
+                print(f"Selected: {selected_body.name}")
+            else:
+                # Click too far from any body, clear selection
+                selected_body_state['body'] = None
+                info_text.set_text('')
+                fig.canvas.draw_idle()
+                print(f"No body within threshold (closest was {distances[closest_idx]:.1f}px away)")
+
+        except Exception as e:
+            print(f"Error selecting body: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Connect click event
+    fig.canvas.mpl_connect('button_press_event', on_click)
+
     ax.set_xlabel('X (AU)')
     ax.set_ylabel('Y (AU)')
     ax.set_zlabel('Z (AU)')
@@ -164,23 +304,29 @@ def create_animation(
     # Plot sun at origin
     ax.scatter([0], [0], [0], c='yellow', s=200, marker='*', label='Altaira')
 
-    # Plot orbit paths (static)
+    # Plot orbit paths (static) - store references for toggling visibility
     print("Plotting orbit paths...")
+    planet_orbit_lines = []
     for orbit in planet_orbits:
-        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'b-', alpha=0.6, linewidth=1)
+        line, = ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'b-', alpha=0.6, linewidth=1)
+        planet_orbit_lines.append(line)
 
+    asteroid_orbit_lines = []
     for orbit in asteroid_orbits:
-        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'g-', alpha=0.6, linewidth=0.5)
+        line, = ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'g-', alpha=0.6, linewidth=0.5)
+        asteroid_orbit_lines.append(line)
 
+    comet_orbit_lines = []
     for orbit in comet_orbits:
-        ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'r-', alpha=0.6, linewidth=0.5)
+        line, = ax.plot(orbit[:, 0], orbit[:, 1], orbit[:, 2], 'r-', alpha=0.6, linewidth=0.5)
+        comet_orbit_lines.append(line)
 
     # Plot solution trajectory if provided
     solution_line = None
     if solution_data:
         # Plot the full trajectory path (static)
         positions = np.array([pt['position'] / AU for pt in solution_data['state_points']])
-        ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
+        solution_line, = ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
                 'c-', alpha=0.8, linewidth=2, label='Solution Trajectory')
 
     # Create scatter plots for moving bodies
@@ -207,6 +353,11 @@ def create_animation(
                          verticalalignment='top',
                          bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
+    # Add text for displaying selected body info
+    info_text = fig.text(0.02, 0.05, '', fontsize=10, family='monospace',
+                         verticalalignment='bottom',
+                         bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+
     # Animation parameters
     total_time = duration_years * YEAR  # seconds
     n_frames = int(duration_years * fps)
@@ -216,12 +367,28 @@ def create_animation(
     time_rate_state = {
         'rate': 1.0,
         'current_time': 0.0,
-        'last_frame': 0
+        'last_frame': 0,
+        'paused': False
+    }
+
+    # Visibility state for body types and orbits
+    visibility_state = {
+        'planets': True,
+        'asteroids': True,
+        'comets': True,
+        'orbits': True
     }
 
     def on_key_press(event):
-        """Handle keyboard input for time rate control"""
-        if event.key == '+' or event.key == '=':
+        """Handle keyboard input for time rate control and visibility toggles"""
+        if event.key == ' ':
+            # Toggle pause
+            time_rate_state['paused'] = not time_rate_state['paused']
+            if time_rate_state['paused']:
+                print("Animation PAUSED")
+            else:
+                print("Animation RESUMED")
+        elif event.key == '+' or event.key == '=':
             # Speed up (double the rate)
             time_rate_state['rate'] *= 2.0
             time_rate_state['rate'] = min(time_rate_state['rate'], 64.0)  # Max 64x
@@ -229,12 +396,55 @@ def create_animation(
         elif event.key == '-' or event.key == '_':
             # Slow down (halve the rate)
             time_rate_state['rate'] /= 2.0
-            time_rate_state['rate'] = max(time_rate_state['rate'], 0.125)  # Min 0.125x
-            print(f"Time rate: {time_rate_state['rate']:.1f}x")
+            time_rate_state['rate'] = max(time_rate_state['rate'], 0.00125)  # Min 0.00125x (100x slower)
+            print(f"Time rate: {time_rate_state['rate']:.4f}x")
         elif event.key == '0':
             # Reset to normal speed
             time_rate_state['rate'] = 1.0
             print(f"Time rate: {time_rate_state['rate']:.1f}x (reset)")
+        elif event.key == 'p':
+            # Toggle planets visibility
+            visibility_state['planets'] = not visibility_state['planets']
+            planet_scatter.set_visible(visibility_state['planets'])
+            for label in planet_labels:
+                label.set_visible(visibility_state['planets'])
+            if visibility_state['orbits']:
+                for line in planet_orbit_lines:
+                    line.set_visible(visibility_state['planets'])
+            print(f"Planets: {'ON' if visibility_state['planets'] else 'OFF'}")
+            fig.canvas.draw_idle()
+        elif event.key == 'a':
+            # Toggle asteroids visibility
+            visibility_state['asteroids'] = not visibility_state['asteroids']
+            asteroid_scatter.set_visible(visibility_state['asteroids'])
+            if visibility_state['orbits']:
+                for line in asteroid_orbit_lines:
+                    line.set_visible(visibility_state['asteroids'])
+            print(f"Asteroids: {'ON' if visibility_state['asteroids'] else 'OFF'}")
+            fig.canvas.draw_idle()
+        elif event.key == 'c':
+            # Toggle comets visibility
+            visibility_state['comets'] = not visibility_state['comets']
+            comet_scatter.set_visible(visibility_state['comets'])
+            if visibility_state['orbits']:
+                for line in comet_orbit_lines:
+                    line.set_visible(visibility_state['comets'])
+            print(f"Comets: {'ON' if visibility_state['comets'] else 'OFF'}")
+            fig.canvas.draw_idle()
+        elif event.key == 'o':
+            # Toggle orbit tracks visibility
+            visibility_state['orbits'] = not visibility_state['orbits']
+            if visibility_state['planets']:
+                for line in planet_orbit_lines:
+                    line.set_visible(visibility_state['orbits'])
+            if visibility_state['asteroids']:
+                for line in asteroid_orbit_lines:
+                    line.set_visible(visibility_state['orbits'])
+            if visibility_state['comets']:
+                for line in comet_orbit_lines:
+                    line.set_visible(visibility_state['orbits'])
+            print(f"Orbit tracks: {'ON' if visibility_state['orbits'] else 'OFF'}")
+            fig.canvas.draw_idle()
 
     # Connect keyboard event
     fig.canvas.mpl_connect('key_press_event', on_key_press)
@@ -247,12 +457,13 @@ def create_animation(
         if spacecraft_scatter:
             spacecraft_scatter._offsets3d = ([], [], [])
         time_text.set_text('')
+        info_text.set_text('')
         time_rate_state['current_time'] = 0.0
         time_rate_state['last_frame'] = 0
         for label in planet_labels:
             label.set_position((0, 0))
             label.set_3d_properties(0)
-        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text] + planet_labels
+        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text, info_text] + planet_labels
         if spacecraft_scatter:
             artists.append(spacecraft_scatter)
         return artists
@@ -263,12 +474,14 @@ def create_animation(
         frame_delta = frame - time_rate_state['last_frame']
         time_rate_state['last_frame'] = frame
 
-        # Advance time by the delta scaled by rate
-        base_time_step = total_time / n_frames
-        time_rate_state['current_time'] += frame_delta * base_time_step * time_rate_state['rate']
+        # Only advance time if not paused
+        if not time_rate_state['paused']:
+            # Advance time by the delta scaled by rate
+            base_time_step = total_time / n_frames
+            time_rate_state['current_time'] += frame_delta * base_time_step * time_rate_state['rate']
 
-        # Wrap time to stay within bounds
-        time_rate_state['current_time'] = time_rate_state['current_time'] % total_time
+            # Wrap time to stay within bounds
+            time_rate_state['current_time'] = time_rate_state['current_time'] % total_time
 
         t = time_rate_state['current_time']
 
@@ -347,14 +560,16 @@ def create_animation(
         time_years = t / YEAR
         time_days = t / DAY
         rate = time_rate_state['rate']
+        paused = time_rate_state['paused']
+        pause_str = " [PAUSED]" if paused else ""
         time_text.set_text(
             f'Epoch: {t:.2f} s\n'
             f'Time:  {time_years:.2f} years\n'
             f'       {time_days:.1f} days\n'
-            f'Rate:  {rate:.2f}x'
+            f'Rate:  {rate:.4f}x{pause_str}'
         )
 
-        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text] + planet_labels
+        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text, info_text] + planet_labels
         if spacecraft_scatter:
             artists.append(spacecraft_scatter)
         return artists
@@ -393,11 +608,17 @@ def main():
     # Save or show animation
     print("Displaying animation...")
     print("\nControls:")
+    print("  Mouse click: Select body (shows info in lower left)")
     print("  Mouse wheel: Zoom in/out")
     print("  Mouse drag:  Rotate view")
+    print("  Spacebar:    Pause/Resume")
     print("  + or =:      Speed up time (2x)")
     print("  - or _:      Slow down time (0.5x)")
     print("  0:           Reset time rate to 1x")
+    print("  p:           Toggle planets visibility")
+    print("  a:           Toggle asteroids visibility")
+    print("  c:           Toggle comets visibility")
+    print("  o:           Toggle orbit tracks visibility")
     print("\nClose the window to exit.")
     plt.show()
 
