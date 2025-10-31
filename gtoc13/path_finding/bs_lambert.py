@@ -269,7 +269,7 @@ def _enumerate_lambert_solutions(
         solutions.append(entry)
 
     args = (r1.tolist(), r2.tolist(), tof, MU_ALTAIRA)
-    for cw_flag in (False, True):
+    for cw_flag in (False,):  # we only are interested in prograde solution (cw=False)
         try:
             lp = pykep.lambert_problem(*args, cw=cw_flag, max_revs=max_revs)
         except Exception:
