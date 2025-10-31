@@ -1,6 +1,10 @@
 """
 BINLP to roughly find the most "valuable" sequences for scientific flybys.
 Assisting flybys not counted.
+Assumes a starting year, first arc solver should determine feasibility of the starting body.
+- Grand tour bonus scaling rather 1.0 or 1.3 multiplier.
+
+NOTE: users need to update their environment according to the pyproject.toml and install 'scip' via conda.
 
 Example
 -------
@@ -10,12 +14,14 @@ Example
 import pyomo.environ as pyo
 from pyomo.opt import TerminationCondition
 import numpy as np
-from pathlib import Path
 
-from gtoc13 import KMPDU, SPTU, YPTU, YEAR, MU_ALTAIRA, bodies_data, lambert_tof, lambert_v, Body
+# from pathlib import Path
+
+from gtoc13 import DAY, KMPDU, SPTU, YEAR, MU_ALTAIRA, bodies_data, Body, lambert_delta_v
 
 from tqdm import tqdm
 import time
+from pprint import pprint
 
 
 class Timer:
@@ -37,18 +43,20 @@ def orbital_period(body: Body):
 ## Generate position tables for just the bodies
 discrete_rs = dict()
 To = 5 * YEAR
-Tf = 15 * YEAR  # years in seconds
-Nk_lim = 5  # 13
+Tf = 30 * YEAR  # years in seconds
+Nk_lim = 3  # 13
+# gt_bodies = 7
 
+## Should tune the granularity of the discretization
 for b_idx, body in bodies_data.items():
     if body.is_planet() or body.name == "Yandi":
         TP = orbital_period(body)
         if TP / 2 > YEAR:
-            num = int(np.ceil((Tf - To) / (YEAR / 2)))
+            num = int(np.ceil((Tf - To) / (YEAR / 3)))
         elif TP * 2 > YEAR:
-            num = int(np.ceil((Tf - To) / (YEAR / 4)))
+            num = int(np.ceil((Tf - To) / (YEAR / 6)))
         else:
-            num = int(np.ceil((Tf - To) / (TP * 4)))
+            num = int(np.ceil((Tf - To) / (TP * 18)))
         # num = int(np.ceil(Tf / (YEAR / 4))) if YEAR / 4 < TP else int(np.ceil(Tf / (TP)))
         ts = np.linspace(To, Tf, num)
         discrete_rs[b_idx] = dict(
@@ -59,7 +67,7 @@ for b_idx, body in bodies_data.items():
         )
 
 ## Generate decision variables
-h_tot = 6  # sequence length
+h_tot = 12  # sequence length
 b_idxs = discrete_rs.keys()
 
 print("...initialize model parameters...")
@@ -152,7 +160,7 @@ with Timer():
     for h in m.h:
         times[h] = pyo.quicksum(m.tfs[kt] * m.x_kth[kt, h] for kt in kt_idxs)
         if h > 1:
-            m.h_time_con.add(times[h] >= times[h - 1])
+            m.h_time_con.add(times[h] >= times[h - 1] + DAY)
 
 print("...create y indicator variables...")
 with Timer():
@@ -211,7 +219,7 @@ with Timer():
         m.z_ind_con.add(z_sum_term <= M * (m.z_kj0[kj] + m.z_kj1[kj]))
 
 
-print("...create seasonal penalty terms constraints...")
+print("...create seasonal penalty terms...")
 with Timer():
     flyby_terms = {k: {} for k in m.k}
     for k in m.k:
@@ -232,11 +240,29 @@ with Timer():
             flyby_terms[k][i] = (first_term + penalty_term) * weight_k
 
 
+print("...create grand tour bonus indicator variables and big-M constraints...")
+with Timer():
+    m.zp_k = pyo.Var(m.k, within=pyo.Binary)  # planets and yandi
+    m.Gp = pyo.Var(initialize=1, within=pyo.Binary)  # all planets indicator
+    m.zp_ind_con = pyo.ConstraintList()
+    for k in m.k:
+        M = discrete_rs[k]["t_k"]
+        zp_sum_term = pyo.quicksum(pyo.quicksum(m.x_kth[k, t, h] for h in m.h) for t in range(M))
+        m.zp_ind_con.add(zp_sum_term <= 2 * M * m.zp_k[k])
+        m.zp_ind_con.add(zp_sum_term - 1 >= 2 * M * (m.zp_k[k] - 1))
+
+    # m.grandtour_ind_con = pyo.ConstraintList()
+    # m.grandtour_ind_con.add(pyo.quicksum(m.zp_k[k] for k in m.k) - gt_bodies <= m.Gp * 200)
+    # m.grandtour_ind_con.add(pyo.quicksum(m.zp_k[k] for k in m.k) - gt_bodies >= (m.Gp - 1) * 200)
+    # GT_bonus = 1.0 + 0.3 * m.Gp
+GT_bonus = pyo.quicksum(m.zp_k[k] for k in m.k)
+
 ## Objective function
 print("...create objective function...")
 with Timer():
     m.max_score = pyo.Objective(
-        rule=pyo.quicksum(flyby_terms[k][i] for k in m.k for i in range(1, discrete_rs[k]["t_k"])),
+        rule=GT_bonus
+        * pyo.quicksum(flyby_terms[k][i] for k in m.k for i in range(1, discrete_rs[k]["t_k"])),
         sense=pyo.maximize,
     )
 
@@ -246,6 +272,10 @@ with Timer():
 m.x_kth[10, 0, 1].fix(1)
 
 solver = pyo.SolverFactory("scip", solver_io="nl")
+
+
+## Run
+print("...run solver...")
 results = solver.solve(m, tee=True)
 print(f"\n\n...iteration {0} solved...\n\n")
 
@@ -261,31 +291,34 @@ else:
             if value > 0:
                 sequence.append((bodies_data[k].name, discrete_rs[k]["ts"][t] / SPTU))
 
-    print(sorted(sequence, key=lambda x: x[1]))
+    pprint(sorted(sequence, key=lambda x: x[1]))
     print(f"\n\n...iteration {0} complete...\n\n")
 
-    m.cuts_con = pyo.ConstraintList()
-    for sol in range(3):
-        expr = 0
-        for x_idx in m.x_kth:
-            if pyo.value(m.x_kth[x_idx]) < 0.5:
-                expr += m.x_kth[x_idx]
-            else:
-                expr += 1 - m.x_kth[x_idx]
-        m.cuts_con.add(expr >= 1)
-        results = solver.solve(m, tee=True)
-        print(f"\n\n...iteration {sol+1} solved...\n\n")
-        if results.solver.termination_condition == TerminationCondition.infeasible:
-            print("Infeasible, sorry :(")
-            print(f"\n\n...iteration {sol+1} complete...\n\n")
-            break
-        else:
-            sequence = []
-            for kt in kt_idxs:
-                k, t = kt
-                for h in m.h:
-                    value = pyo.value(m.x_kth[kt, h])
-                    if value > 0:
-                        sequence.append((bodies_data[k].name, discrete_rs[k]["ts"][t] / SPTU))
-            print(sorted(sequence, key=lambda x: x[1]))
-            print(f"\n\n...iteration {sol+1} complete...\n\n")
+    # No-good cuts for multiple solutions
+    # m.cuts_con = pyo.ConstraintList()
+    # for sol in range(2):
+    #     expr = 0
+    #     for x_idx in m.x_kth:
+    #         if pyo.value(m.x_kth[x_idx]) < 0.5:
+    #             expr += m.x_kth[x_idx]
+    #         else:
+    #             expr += 1 - m.x_kth[x_idx]
+    #     m.cuts_con.add(expr >= 1)
+
+    #     print("...run solver...")
+    #     results = solver.solve(m, tee=True)
+    #     print(f"\n\n...iteration {sol+1} solved...\n\n")
+    #     if results.solver.termination_condition == TerminationCondition.infeasible:
+    #         print("Infeasible, sorry :(")
+    #         print(f"\n\n...iteration {sol+1} complete...\n\n")
+    #         break
+    #     else:
+    #         sequence = []
+    #         for kt in kt_idxs:
+    #             k, t = kt
+    #             for h in m.h:
+    #                 value = pyo.value(m.x_kth[kt, h])
+    #                 if value > 0:
+    #                     sequence.append((bodies_data[k].name, discrete_rs[k]["ts"][t] / SPTU))
+    #         pprint(sorted(sequence, key=lambda x: x[1]))
+    #         print(f"\n\n...iteration {sol+1} complete...\n\n")
