@@ -5,12 +5,12 @@ from diffrax import diffeqsolve, ODETerm, Dopri5, SaveAt, PIDController
 from typing import Tuple
 import numpy as np
 
-from .orbital_elements import OrbitalElements
-from .cartesian_state import CartesianState
-from .constants import (
-    KMPAU, MU_ALTAIRA, DAY, YEAR,
-    KMPDU, SPTU, YPTU,
-    C_FLUX, R0, SAIL_AREA, SPACECRAFT_MASS
+from gtoc13.bodies import bodies_data
+from gtoc13.orbital_elements import OrbitalElements
+from gtoc13.cartesian_state import CartesianState
+from gtoc13.constants import (
+    KMPAU, MU_ALTAIRA, YEAR,
+    SPTU
 )
 
 
@@ -150,6 +150,172 @@ def patched_conic_flyby(
     
     return h_p, is_valid
 
+
+def initial_arc_defects(
+    r0: jnp.ndarray,
+    rf: jnp.ndarray,
+    t0: float,
+    tf: float,
+    distance_units: str,
+    time_units: str
+):
+    """
+    Compute the defects associated with the initial coast arc.
+
+    Propagate a lambert arc from r0 to rf in the alloted time.
+    The defects associated with this arc are:
+    1. The initial position [r0_x, r0_y, r0_z] must have an r0_x component of -200 AU.
+    2. The initial velocity resulting from the lambert solve must only
+       have a nonzero component in the x direction.
+    3. rf should be zero if it is at the same location as a body at tf.
+       If it is between bodies then its value should be positive, and it should be
+       some form of distance metric based on how close it is to the nearest bodies.
+       In essence, this should provide some gradient that points to an rf that is at the location
+       of some body.
+
+    Args:
+        r0: Initial position vector [x, y, z] in distance_units
+        rf: Final position vector [x, y, z] in distance_units
+        t0: Initial time in time_units
+        tf: Final time in time_units
+        distance_units: Units for position ('km', 'AU', 'DU')
+        time_units: Units for time ('s', 'year', 'TU')
+
+    Returns:
+        Tuple of defects:
+        - r0_x_defect: Defect in initial x position (should be -200 AU)
+        - v0_y_defect: Initial velocity y component (should be 0)
+        - v0_z_defect: Initial velocity z component (should be 0)
+        - rf_defect: 3-vector of distance to nearest body [dx, dy, dz] (should be zero)
+        - converged: Whether Lambert solver converged
+    """
+    from lamberthub import vallado2013_jax
+
+    # Convert to canonical units (km and seconds) for Lambert solver
+    if distance_units.lower() in ('au', 'du'):
+        r0_km = r0 * KMPAU
+        rf_km = rf * KMPAU
+    else:  # km
+        r0_km = r0
+        rf_km = rf
+
+    if time_units.lower() in ('year', 'years'):
+        tof_s = (tf - t0) * YEAR
+    elif time_units.lower() == 'tu':
+        tof_s = (tf - t0) * SPTU
+    else:  # seconds
+        tof_s = tf - t0
+
+    # Solve Lambert's problem
+    v0, vf, lam_resid = vallado2013_jax(
+        mu=MU_ALTAIRA,
+        r1=r0_km,
+        r2=rf_km,
+        tof=tof_s,
+        M=0,  # Zero revolutions
+        prograde=True,
+        low_path=True,
+        full_output=False
+    )
+
+    # Defect 1: r0_x should be -200 AU
+    r0_x_au = r0_km[0] / KMPAU
+    r0_x_defect = r0_x_au + 200.0  # Should be zero when r0_x = -200 AU
+
+    # Defect 2: v0_y should be zero
+    v0_y_defect = v0[1]
+
+    # Defect 3: v0_z should be zero
+    v0_z_defect = v0[2]
+
+    # Defect 4: rf should be at the location of a body
+    # Compute body positions at time tf
+
+    bodies_positions = []
+    for body in bodies_data.values():
+        state = body.get_state(tf, time_units=time_units, distance_units=distance_units)
+        bodies_positions.append(state.r)
+
+    bodies_positions = jnp.stack(bodies_positions)  # Shape: (n_bodies, 3)
+
+    # Compute distance to each body
+    deltas = bodies_positions - rf  # Shape: (n_bodies, 3)
+    distances_squared = jnp.sum(deltas**2, axis=1)  # Shape: (n_bodies,)
+
+    # Use softmin to compute weighted average of deltas
+    # This provides a smooth, differentiable approximation to "nearest body"
+    # Smaller alpha = sharper focus on nearest body
+    alpha = 10.0  # Sharpness parameter
+    weights = jnp.exp(-alpha * distances_squared)
+    weights = weights / (jnp.sum(weights) + 1e-20)  # Normalize
+
+    # Weighted average of position deltas points toward nearest body
+    rf_defect = jnp.sum(weights[:, None] * deltas, axis=0)
+
+    return r0_x_defect, v0_y_defect, v0_z_defect, rf_defect, lam_resid
+
+
+def flyby_defects(
+    v_in: jnp.ndarray,
+    v_out: jnp.ndarray,
+    v_body: jnp.ndarray,
+    mu_body: float,
+    r_body: float
+) -> Tuple[float, bool]:
+    """
+    Compute parameters which determine whether a flyby is valid.
+
+    Returns the body-centric difference between the incoming and
+    outgoing v-infinity magnitudes, and the violation associated
+    with the flyby altitude.
+    
+    The flyby altitude is the units of radii above or below the allowable flyby
+    normalized altitude from 0.1 to 100.0.
+
+    Therefore a flyby altitude of 110 body radii would return an h_p_defect of 10.
+    A flyby altitude of 0.01 body radii would return an h_p_defect of 0.99.
+    
+    Args:
+        v_in: incoming inertial velocity (km/s, DU/TU, or AU/year)
+        v_out: outgoing inertial velocity (km/s, DU/TU, or AU/year)
+        v_body: body inertial velocity (km/s, DU/TU, or AU/year)
+        mu_body: GM of the body (km^3/s^2)
+        r_body: radius of the body (km)
+    
+    Returns:
+        (v_inf_mag_defect, h_p_defect)
+    """
+    v_inf_in = v_in - v_body
+    v_inf_out = v_out - v_body
+
+    # V_inf magnitude defect
+    # Need to be the same from the body frame
+    v_inf_in_mag = jnp.linalg.norm(v_inf_in)
+    v_inf_out_mag = jnp.linalg.norm(v_inf_out)
+    v_inf_mag_defect = v_inf_out_mag - v_inf_in_mag
+
+    # Turn angle calculation
+    # For this purpose, use the average of the two v_inf magnitudes
+    # When defects are satisfied, they will be the same anyway.
+    v_inf_mag_avg = (v_inf_in_mag + v_inf_out_mag) / 2
+    cos_delta = jnp.dot(v_inf_out, v_inf_in) / v_inf_mag_avg
+    cos_delta = jnp.clip(cos_delta, -1.0, 1.0)
+    delta = jnp.arccos(cos_delta)
+
+    # Compute flyby altitude from turn angle
+    sin_half_delta = jnp.sin(delta / 2.0)
+
+    # rp = (mu_body / v_inf^2) * (1/sin(delta/2) - 1)
+    rp = (mu_body / (v_inf_in_mag**2)) * (1.0 / sin_half_delta) - 1.0)
+    h_p_norm = (rp - r_body) / r_body
+
+    # Compute altitude constraint defect (double-sided ReLU)
+    # h_p_defect > 0 means altitude too high (> 100 radii) or too low (< 0.1 radii)
+    # h_p_defect = 0 means altitude is valid (between 0.1 and 100 radii)
+    h_p_defect = jnp.maximum(h_p_norm - 100.0, 0.0) + jnp.maximum(0.1 - h_p_norm, 0.0)
+
+    return v_inf_mag_defect, h_p_defect
+    
 
 @jit
 def seasonal_penalty(r_hat_current: jnp.ndarray, r_hat_previous: jnp.ndarray) -> float:
