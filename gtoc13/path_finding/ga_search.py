@@ -5,7 +5,7 @@ This module encodes a candidate trajectory as a flat vector of body IDs and
 time-of-flight values and lets SciPy drive the search (differential evolution
 or basin hopping). Penalty terms enforce Δv, v∞, mission duration, and repeat
 constraints while the detailed physics—Lambert solves and flyby analysis—reuse
-the `bs_lambert` helpers.
+the shared helpers under ``gtoc13.path_finding.beam``.
 
 Example
 -------
@@ -27,16 +27,30 @@ from __future__ import annotations
 import argparse
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import Bounds, basinhopping, differential_evolution
 
-from gtoc13.constants import DAY
+from gtoc13.constants import DAY, MU_ALTAIRA
 from gtoc13.bodies import bodies_data
-from gtoc13.path_finding import bs_lambert
+from gtoc13.path_finding.beam import lambert as lambert_utils
+from gtoc13.path_finding.beam.config import (
+    BODY_TYPES,
+    BodyRegistry,
+    LambertConfig,
+    DEFAULT_DV_MAX,
+    DEFAULT_TOF_MAX_DAYS,
+    DEFAULT_VINF_MAX,
+    build_body_registry,
+    parse_body_type_string,
+)
+from gtoc13.path_finding.beam.scoring import (
+    hohmann_bounds_for_bodies,
+    mission_score,
+)
 
 
 Vec3 = Tuple[float, float, float]
@@ -57,6 +71,7 @@ class GAConfig:
     vinf_max: Optional[float]
     max_revs: int
     branch_limit: int
+    registry: BodyRegistry
     body_choices: Tuple[Optional[int], ...]  # final entry is sentinel (None)
 
 
@@ -67,7 +82,7 @@ class EvaluationResult:
     total_tof: float
     total_dv: float
     max_leg_dv: float
-    path: Tuple[bs_lambert.Encounter, ...]
+    path: Tuple[lambert_utils.Encounter, ...]
     violations: Tuple[str, ...]
     penalty: float
 
@@ -80,15 +95,15 @@ def _build_body_choices(allowed: Sequence[int], include_sentinel: bool = True) -
     return ordered
 
 
-def _body_period_days(body_id: int) -> Optional[float]:
+def _body_period_days(body_id: int, registry: BodyRegistry) -> Optional[float]:
     cached = _PERIOD_CACHE.get(body_id)
     if cached is not None:
         return cached
-    a = bs_lambert.ACTIVE_SEMI_MAJOR_AXES.get(body_id)
+    a = registry.semi_major_axes.get(body_id)
     if a is None or a <= 0.0:
         _PERIOD_CACHE[body_id] = None
         return None
-    period_seconds = 2.0 * math.pi * math.sqrt((a**3) / bs_lambert.MU_ALTAIRA)
+    period_seconds = 2.0 * math.pi * math.sqrt((a**3) / MU_ALTAIRA)
     period_days = period_seconds / DAY
     _PERIOD_CACHE[body_id] = period_days
     return period_days
@@ -99,13 +114,13 @@ def _norm(vec: Iterable[float]) -> float:
     return float(np.linalg.norm(arr))
 
 
-def _create_root_encounter(start_body: int, start_epoch: float, start_vinf: Optional[Vec3]) -> bs_lambert.Encounter:
-    r0 = bs_lambert.ephemeris_position(start_body, start_epoch)
+def _create_root_encounter(start_body: int, start_epoch: float, start_vinf: Optional[Vec3]) -> lambert_utils.Encounter:
+    r0 = lambert_utils.ephemeris_position(start_body, start_epoch)
     if start_vinf is None:
-        return bs_lambert.Encounter(body=start_body, t=start_epoch, r=r0)
+        return lambert_utils.Encounter(body=start_body, t=start_epoch, r=r0)
     vinf_vec = tuple(float(x) for x in start_vinf)
     vinf_mag = _norm(vinf_vec)
-    return bs_lambert.Encounter(
+    return lambert_utils.Encounter(
         body=start_body,
         t=start_epoch,
         r=r0,
@@ -192,6 +207,11 @@ class TrajectoryEvaluator:
     def _evaluate_raw(self, x: np.ndarray) -> EvaluationResult:
         config = self.config
         genes = _decode_vector(x, config)
+        lambert_cfg = LambertConfig(
+            dv_max=config.dv_max,
+            vinf_max=config.vinf_max,
+            tof_max_days=config.mission_tof_max,
+        )
 
         path: Tuple[bs_lambert.Encounter, ...] = (self.root,)
         total_dv = 0.0
@@ -228,7 +248,7 @@ class TrajectoryEvaluator:
                 penalty += 1e3 * (total_elapsed - config.mission_tof_max + 1.0)
 
             try:
-                tmin, tmax = bs_lambert.hohmann_bounds_for_bodies(parent.body, body_id)
+                tmin, tmax = hohmann_bounds_for_bodies(parent.body, body_id, config.registry)
             except Exception:
                 tmin, tmax = None, None
             if tmin is not None and tmax is not None:
@@ -238,7 +258,7 @@ class TrajectoryEvaluator:
                     violations.append("tof_out_of_window")
                     penalty += 1e3 * (abs(tof_days - np.clip(tof_days, window_min, window_max)) + 1.0)
 
-            sol_entries = bs_lambert._enumerate_lambert_solutions(
+            sol_entries = lambert_utils.enumerate_lambert_solutions(
                 parent.body,
                 body_id,
                 parent.t * DAY,
@@ -251,8 +271,8 @@ class TrajectoryEvaluator:
                 break
             sol_entries.sort(key=lambda s: float(np.linalg.norm(np.asarray(s["v1"])) + np.linalg.norm(np.asarray(s["v2"]))))
             sol = sol_entries[0]
-            _, v_body_depart = bs_lambert.body_state(parent.body, parent.t)
-            _, v_body_arrive = bs_lambert.body_state(body_id, arrival_time)
+            _, v_body_depart = lambert_utils.body_state(parent.body, parent.t)
+            _, v_body_arrive = lambert_utils.body_state(body_id, arrival_time)
 
             vinf_out_vec = np.asarray(sol["v1"], dtype=float) - v_body_depart
             vinf_in_vec = np.asarray(sol["v2"], dtype=float) - v_body_arrive
@@ -272,7 +292,7 @@ class TrajectoryEvaluator:
                     violations.append("vinf_limit")
                     penalty += 1e3 * excess**2
 
-            flyby_valid, flyby_altitude, dv_mag, dv_vec = bs_lambert.evaluate_flyby(
+            flyby_valid, flyby_altitude, dv_mag, dv_vec = lambert_utils.evaluate_flyby(
                 parent.body,
                 parent.vinf_in_vec,
                 tuple(float(x) for x in vinf_out_vec),
@@ -287,7 +307,7 @@ class TrajectoryEvaluator:
                     violations.append("dv_limit")
                     penalty += 2e3 * dv_excess**2
 
-            parent_resolved = bs_lambert.replace(
+            parent_resolved = replace(
                 parent,
                 vinf_out=vinf_out,
                 vinf_out_vec=tuple(float(x) for x in vinf_out_vec),
@@ -298,7 +318,7 @@ class TrajectoryEvaluator:
             )
             prefix = path[:-1] + (parent_resolved,)
 
-            child = bs_lambert.Encounter(
+            child = lambert_utils.Encounter(
                 body=body_id,
                 t=arrival_time,
                 r=tuple(float(x) for x in sol["r2"]),
@@ -310,7 +330,7 @@ class TrajectoryEvaluator:
             prev_same = next((enc for enc in reversed(prefix) if enc.body == body_id), None)
             if prev_same is not None:
                 dt = arrival_time - prev_same.t
-                period_days = _body_period_days(body_id)
+                period_days = _body_period_days(body_id, config.registry)
                 if period_days is not None and period_days > 0.0:
                     min_sep = 0.4 * period_days
                     if dt <= min_sep:
@@ -319,13 +339,13 @@ class TrajectoryEvaluator:
                         penalty += 1e3 * (shortfall + 1.0)
 
             candidate_path = prefix + (child,)
-            total_score = bs_lambert.mission_score(candidate_path)
+            total_score = mission_score(lambert_cfg, config.registry, candidate_path)
             if not math.isfinite(total_score):
                 violations.append("score_nan")
                 penalty += 1e5
                 break
 
-            child = bs_lambert.replace(child, J_total=total_score)
+            child = replace(child, J_total=total_score)
             path = candidate_path[:-1] + (child,)
 
             total_dv += dv_mag
@@ -388,7 +408,7 @@ def objective(vec: np.ndarray, evaluator: TrajectoryEvaluator) -> float:
     return -res_eval.score + res_eval.penalty
 
 
-def _format_path(path: Tuple[bs_lambert.Encounter, ...]) -> str:
+def _format_path(path: Tuple[lambert_utils.Encounter, ...]) -> str:
     lines = []
     for idx, enc in enumerate(path):
         vinf_in = "—" if enc.vinf_in is None else f"{enc.vinf_in:.3f}"
@@ -423,9 +443,9 @@ def run_cli() -> None:
     )
     parser.add_argument("--tof-min-leg", type=float, default=10.0, help="Minimum leg time-of-flight (days).")
     parser.add_argument("--tof-max-leg", type=float, default=400.0, help="Maximum leg time-of-flight (days).")
-    parser.add_argument("--tof-max", type=float, default=bs_lambert.TOF_MISSION_MAX_DAYS, help="Mission TOF cap (days).")
-    parser.add_argument("--dv-max", type=float, default=bs_lambert.DV_PERIAPSIS_MAX, help="Periapsis Δv limit (km/s).")
-    parser.add_argument("--vinf-max", type=float, default=bs_lambert.VINF_MAX, help="Maximum |v∞| (km/s).")
+    parser.add_argument("--tof-max", type=float, default=DEFAULT_TOF_MAX_DAYS, help="Mission TOF cap (days).")
+    parser.add_argument("--dv-max", type=float, default=DEFAULT_DV_MAX, help="Periapsis Δv limit (km/s).")
+    parser.add_argument("--vinf-max", type=float, default=DEFAULT_VINF_MAX, help="Maximum |v∞| (km/s).")
     parser.add_argument("--max-revs", type=int, default=2, help="Maximum revolutions for Lambert solutions.")
     parser.add_argument(
         "--branch-limit",
@@ -470,6 +490,9 @@ def run_cli() -> None:
     )
     args = parser.parse_args()
 
+    raw_body_types = list(parse_body_type_string(args.body_types))
+    if not raw_body_types:
+        raw_body_types = ["planet", "asteroid", "comet"]
     type_aliases = {
         "planet": "planet",
         "planets": "planet",
@@ -481,10 +504,7 @@ def run_cli() -> None:
         "all": "all",
     }
     requested_types: set[str] = set()
-    for token in (args.body_types or "").split(","):
-        token = token.strip().lower()
-        if not token:
-            continue
+    for token in raw_body_types:
         alias = type_aliases.get(token)
         if alias is None:
             raise SystemExit(f"Unknown body type '{token}'.")
@@ -495,20 +515,23 @@ def run_cli() -> None:
     if not requested_types:
         requested_types = {"planet", "asteroid", "comet"}
 
-    bs_lambert._activate_body_subset(requested_types)
+    registry = build_body_registry(requested_types)
 
     if args.start_body not in bodies_data:
         available = ", ".join(str(k) for k in sorted(bodies_data.keys()))
         raise SystemExit(f"Unknown start body {args.start_body}. IDs: {available}")
 
-    allowed_ids = bs_lambert.ACTIVE_BODY_IDS
-    if args.start_body not in allowed_ids:
-        raise SystemExit("Start body must be within the selected body subset.")
+    if args.start_body not in registry.body_ids:
+        body_type = BODY_TYPES.get(args.start_body, "unknown")
+        allowed_list = ", ".join(sorted(requested_types))
+        raise SystemExit(
+            f"Start body {args.start_body} is type '{body_type}' but the allowed set is ({allowed_list})."
+        )
 
     if args.max_legs <= 0:
         raise SystemExit("--max-legs must be positive.")
 
-    body_choices = _build_body_choices(allowed_ids, include_sentinel=not args.require_full_length)
+    body_choices = _build_body_choices(registry.body_ids, include_sentinel=not args.require_full_length)
     config = GAConfig(
         start_body=args.start_body,
         start_epoch=args.start_epoch,
@@ -522,6 +545,7 @@ def run_cli() -> None:
         vinf_max=None if args.vinf_max is None or args.vinf_max < 0 else args.vinf_max,
         max_revs=max(0, args.max_revs),
         branch_limit=max(1, args.branch_limit),
+        registry=registry,
         body_choices=body_choices,
     )
 
