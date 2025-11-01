@@ -18,24 +18,20 @@ from .constants import (
 def solve_kepler(M: float, e: float, tol: float = 1e-10, max_iter: int = 50) -> float:
     """
     Solve Kepler's equation M = E - e*sin(E) for eccentric anomaly E
-    using Newton-Raphson iteration.
+    using Newton-Raphson iteration with jax.lax.scan for AD compatibility.
     """
     # Initial guess: use jax.lax.cond for JIT compatibility
     E = jax.lax.cond(e < 0.8, lambda: M, lambda: jnp.pi)
 
-    def body_fn(carry):
-        E, i = carry
+    def body_fn(E, _):
+        # Newton-Raphson iteration
         f = E - e * jnp.sin(E) - M
         fp = 1.0 - e * jnp.cos(E)
         E_new = E - f / fp
-        return (E_new, i + 1)
+        return E_new, E_new
 
-    def cond_fn(carry):
-        E, i = carry
-        E_prev = E - (E - e * jnp.sin(E) - M) / (1.0 - e * jnp.cos(E))
-        return (jnp.abs(E - E_prev) > tol) & (i < max_iter)
-
-    E_final, _ = jax.lax.while_loop(cond_fn, body_fn, (E, 0))
+    # Run fixed number of iterations using scan (compatible with reverse-mode AD)
+    E_final, _ = jax.lax.scan(body_fn, E, None, length=max_iter)
     return E_final
 
 
