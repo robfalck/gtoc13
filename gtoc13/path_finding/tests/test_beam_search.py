@@ -2,6 +2,14 @@ import unittest
 
 from numpy.testing import assert_allclose
 from gtoc13.path_finding import BeamSearch
+from gtoc13.path_finding.beam.config import (
+    BodyRegistry,
+    BASE_BODY_WEIGHTS,
+    BASE_SEMI_MAJOR_AXES,
+    make_lambert_config,
+)
+from gtoc13.path_finding.beam.lambert import Encounter, ephemeris_position
+from gtoc13.path_finding.beam.pipeline import make_expand_fn, make_score_fn, key_fn
 
 
 class TestBeamSearch(unittest.TestCase):
@@ -15,7 +23,14 @@ class TestBeamSearch(unittest.TestCase):
             target = 12
             return -abs(target - c)         # higher is better
 
-        bs = BeamSearch(expand_fn, score_fn, beam_width=4, max_depth=5, key_fn=lambda s: s)
+        bs = BeamSearch(
+            expand_fn,
+            score_fn,
+            beam_width=4,
+            max_depth=5,
+            key_fn=lambda s: s,
+            parallel_backend="thread",
+        )
         final_beam = bs.run(0)
         best = max(final_beam, key=lambda n: n.cum_score)
 
