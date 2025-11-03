@@ -44,7 +44,7 @@ class TestEpehemComp(unittest.TestCase):
 
         prob.setup()
 
-        prob.set_val('ephem.times', times)
+        prob.set_val('ephem.times', times, units='year')
 
         prob.run_model()
 
@@ -55,7 +55,7 @@ class TestEpehemComp(unittest.TestCase):
         times = prob.get_val('ephem.times')
 
         for i, body_id in enumerate(body_sequence):
-            r_check, v_check = bodies_data[body_id].get_state(times[i])
+            r_check, v_check = bodies_data[body_id].get_state(times[i+1])
             assert_near_equal(r[i, :], r_check)
             assert_near_equal(v[i, :], v_check)
         
