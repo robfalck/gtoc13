@@ -49,6 +49,36 @@ def make_expand_fn(
         mission_start = path[0].t
         current_time = path[-1].t
         samples_same = same_body_samples if same_body_samples is not None else registry.tof_sample_count
+
+        # Build a TOF grid that respects both the global sample budget and a per-body
+        # angular resolution (≈1 deg of mean motion) so we avoid oversampling slow movers.
+        def _build_tof_grid(target_body: int, tmin: float, tmax: float, max_samples: int) -> Optional[np.ndarray]:
+            if (
+                not math.isfinite(tmin)
+                or not math.isfinite(tmax)
+                or tmax <= tmin
+            ):
+                return None
+            span = tmax - tmin
+            count = max(2, int(max_samples))
+            min_step = None
+            try:
+                period_days = _orbit_period_days(target_body)
+            except ValueError:
+                period_days = None
+            if period_days is not None and period_days > 0.0:
+                # Minimum step of 0.5 deg of mean motion (clipped to avoid zero step).
+                min_step = max(period_days / 720.0, 1e-6)
+                degree_count = int(math.floor(span / min_step)) + 1
+                if degree_count >= 2:
+                    # Do not exceed the configured grid size, but shrink it when the degree
+                    # sampling would skip fewer points (fast movers keep dense coverage).
+                    count = min(count, max(2, degree_count))
+                else:
+                    # Span smaller than the angular step: just evaluate endpoints.
+                    count = 2
+            return np.linspace(tmin, tmax, count)
+
         for tgt in registry.body_ids:
             if tgt == last_body:
                 if not allow_repeat:
@@ -59,18 +89,18 @@ def make_expand_fn(
                     continue
                 tmin = max(1e-6, 0.4 * period_days)
                 tmax = 4.0 * period_days
-                if not math.isfinite(tmin) or not math.isfinite(tmax) or tmax <= tmin:
+                grid = _build_tof_grid(tgt, tmin, tmax, samples_same)
+                if grid is None:
                     continue
-                tof_grid = np.linspace(tmin, tmax, max(2, samples_same))
             else:
                 try:
                     tmin, tmax = hohmann_bounds_for_bodies(last_body, tgt, registry)
                 except ValueError:
                     continue
-                if not math.isfinite(tmin) or not math.isfinite(tmax) or tmax <= tmin:
+                grid = _build_tof_grid(tgt, tmin, tmax, registry.tof_sample_count)
+                if grid is None:
                     continue
-                tof_grid = np.linspace(tmin, tmax, registry.tof_sample_count)
-            for tof_days in tof_grid:
+            for tof_days in grid:
                 tof_days = float(tof_days)
                 if tof_days <= 0.0:
                     continue
@@ -128,15 +158,22 @@ def make_score_fn(
 
 
 def key_fn(state: State) -> Hashable:
-    """Coarsely bucket by latest encounter to collapse near-duplicates."""
+    """Coarse deduplication bucket keyed by encounter bins and visited bodies."""
 
     if not state:
         return ("root",)
     last = state[-1]
-    tof_bin = int(round(last.t / 10.0))  # 50-day bins
+    try:
+        period_days = _orbit_period_days(last.body)
+    except ValueError:
+        period_days = 0.0
+    bin_width = max(1.0, 0.05 * period_days) if period_days > 0.0 else 10.0
+    origin = 0.0
+    tof_bin = int(math.floor((last.t - origin) / bin_width))
     vinf = -1.0 if last.vinf_in is None else last.vinf_in
-    vinf_bin = int(round(vinf / 1.0))  # 2 km/s bins
-    return (last.body, tof_bin, vinf_bin)
+    vinf_bin = int(round(vinf / 1.0))  # 1 km/s bins for hyperbolic excess magnitude
+    visited_bodies = tuple(sorted({enc.body for enc in state}))
+    return (last.body, visited_bodies, tof_bin, vinf_bin, bin_width)
 
 
 __all__ = ["Proposal", "Vec3", "make_expand_fn", "make_score_fn", "key_fn", "BoundScoreFunction"]

@@ -14,6 +14,8 @@ DEFAULT_VINF_MAX = 100.0  # km/s limit for hyperbolic excess
 DEFAULT_TOF_MAX_DAYS = 200.0 * 365.25  # ~200 years, expressed in days
 DEFAULT_TOF_SAMPLE_COUNT = 200
 DEFAULT_SCORE_MODE = "medium"
+DEFAULT_DV_MODE = "fixed"
+DEFAULT_DV_FACTOR = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +23,8 @@ class LambertConfig:
     dv_max: Optional[float]
     vinf_max: Optional[float]
     tof_max_days: Optional[float]
+    dv_mode: str = DEFAULT_DV_MODE
+    dv_factor: Optional[float] = DEFAULT_DV_FACTOR
     submission_time_days: float = DEFAULT_SUBMISSION_TIME_DAYS
 
 
@@ -72,13 +76,27 @@ def make_lambert_config(
     dv_max: Optional[float],
     vinf_max: Optional[float],
     tof_max_days: Optional[float],
+    *,
+    dv_mode: str = DEFAULT_DV_MODE,
+    dv_factor: Optional[float] = DEFAULT_DV_FACTOR,
     submission_time_days: float = DEFAULT_SUBMISSION_TIME_DAYS,
 ) -> LambertConfig:
     """Normalize CLI-style inputs into a LambertConfig."""
     dv = None if dv_max is not None and dv_max < 0 else dv_max
     vinf = None if vinf_max is not None and vinf_max < 0 else vinf_max
     tof = None if tof_max_days is not None and tof_max_days < 0 else tof_max_days
-    return LambertConfig(dv_max=dv, vinf_max=vinf, tof_max_days=tof, submission_time_days=submission_time_days)
+    mode = dv_mode.lower() if dv_mode else DEFAULT_DV_MODE
+    factor = dv_factor
+    if factor is not None and factor <= 0.0:
+        factor = 0.0
+    return LambertConfig(
+        dv_max=dv,
+        vinf_max=vinf,
+        tof_max_days=tof,
+        dv_mode=mode,
+        dv_factor=factor,
+        submission_time_days=submission_time_days,
+    )
 
 
 def parse_body_type_string(body_types: str) -> Iterable[str]:

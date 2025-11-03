@@ -19,14 +19,14 @@ Vec3 = Tuple[float, float, float]
 # Heuristic constants
 # ---------------------------------------------------------------------------
 
-DEPTH_BONUS_SCALE = 0.9
-NOVELTY_BONUS_SCALE = 0.2
-CONTINUATION_SLACK_WEIGHT = 0.8
-CONTINUATION_GENTLE_WEIGHT = 0.2
-DEPTH_MODE_ALPHA = 0.35
-DEPTH_MODE_REPEAT_FACTOR = 0.7
-DEPTH_MODE_QUICK_RATIO = 0.6
-DEPTH_MODE_QUICK_BONUS_SCALE = 0.1
+DEPTH_BONUS_SCALE = 0.16  # medium, depth
+NOVELTY_BONUS_SCALE = 0.1  # medium, depth, simple
+CONTINUATION_SLACK_WEIGHT = 0.7  # medium
+CONTINUATION_GENTLE_WEIGHT = 0.3  # medium
+DEPTH_MODE_ALPHA = 0.35  # depth
+DEPTH_MODE_REPEAT_FACTOR = 0.7  # depth
+DEPTH_MODE_QUICK_RATIO = 0.6  # depth
+DEPTH_MODE_QUICK_BONUS_SCALE = 0.1  # depth
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +174,11 @@ def score_leg_mission(
     total_score = mission_score(config, registry, candidate_path)
     if config.tof_max_days:
         tof_days = float(getattr(meta.proposal, "tof", 0.0))
-        scale = max(tof_days / config.tof_max_days, 1e-6)
+        mission_start = candidate_path[0].t
+        elapsed = float(child.t - mission_start)
+        remaining_budget = float(config.tof_max_days - elapsed)
+        effective_remaining = max(remaining_budget, 1e-6)
+        scale = max(tof_days / effective_remaining, 1e-6)
         total_score /= scale
     child_contrib = total_score - parent.J_total
     updated_child = replace(child, J_total=total_score)
@@ -189,6 +193,10 @@ def score_leg_medium(
     child: Encounter,
     meta: LambertLegMeta,
 ) -> Tuple[float, Encounter]:
+    tof_days = float(getattr(meta.proposal, "tof", 0.0))
+    if tof_days <= 0.0:
+        return 0.0, child
+
     weight = registry.weights.get(child.body)
     if weight is None:
         body = bodies_data.get(child.body)
@@ -229,13 +237,23 @@ def score_leg_medium(
     if base <= 0.0:
         return 0.0, child
 
-    continuation = _continuation_bonus(slack, vinf_mag)
-    depth_index = len(prefix)
-    depth_bonus = DEPTH_BONUS_SCALE * max(1.0, float(depth_index))
-    visited_bodies = {enc.body for enc in prefix}
-    novelty_bonus = NOVELTY_BONUS_SCALE * weight if child.body not in visited_bodies else 0.0
+    if config.tof_max_days:
+        mission_start = prefix[0].t if prefix else child.t - tof_days
+        elapsed = float(child.t - mission_start)
+        remaining_budget = float(config.tof_max_days - elapsed)
+        effective_remaining = max(remaining_budget, 1e-6)
+        scale = max(tof_days / effective_remaining, 1e-6)
+        base /= scale
 
-    increment = base * continuation + depth_bonus + novelty_bonus
+    continuation_factor = _continuation_bonus(slack, vinf_mag)
+    depth_index = len(prefix)
+    depth_factor = 1.0 + DEPTH_BONUS_SCALE * math.log1p(max(0, depth_index))
+    visited_bodies = {enc.body for enc in prefix}
+    novelty_factor = (
+        1.0 + NOVELTY_BONUS_SCALE * weight if child.body not in visited_bodies else 1.0
+    )
+
+    increment = base * continuation_factor * depth_factor * novelty_factor
     updated_child = replace(child, J_total=parent.J_total + increment)
     return increment, updated_child
 

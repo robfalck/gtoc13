@@ -11,7 +11,8 @@ from gtoc13.bodies import bodies_data
 from gtoc13.constants import DAY, MU_ALTAIRA
 from gtoc13.astrodynamics import patched_conic_flyby
 
-from .config import BodyRegistry, LambertConfig
+from .config import BodyRegistry, LambertConfig, DEFAULT_DV_FACTOR
+from .dv_limits import max_transfer_dv_solar_sail
 
 # ---------------------------------------------------------------------------
 # Shared data structures
@@ -35,6 +36,7 @@ class Encounter:
     flyby_altitude: Optional[float] = None  # periapsis altitude above surface (km)
     dv_periapsis: Optional[float] = None  # required periapsis impulse magnitude (km/s)
     dv_periapsis_vec: Optional[Vec3] = None  # periapsis impulse vector (km/s)
+    dv_limit: Optional[float] = None  # pruning cap applied for this leg (km/s)
     J_total: float = 0.0  # cumulative score up to/including this encounter
 
 
@@ -374,7 +376,25 @@ def resolve_lambert_leg(
             parent.body, parent.vinf_in_vec, vinf_out_vec_tuple
         )
 
-        if dv_mag is not None and config.dv_max is not None and dv_mag > config.dv_max:
+        dv_cap: Optional[float]
+        if config.dv_mode == "dynamic":
+            factor = config.dv_factor if config.dv_factor is not None else DEFAULT_DV_FACTOR
+            r_start = sol.get("r1")
+            r_end = sol.get("r2")
+            tof_days = float(getattr(proposal, "tof", 0.0))
+            if r_start is None or r_end is None or tof_days <= 0.0:
+                dv_cap = 0.0
+            else:
+                dv_cap = max_transfer_dv_solar_sail(
+                    r_start,
+                    r_end,
+                    tof_days,
+                    factor=float(factor),
+                )
+        else:
+            dv_cap = config.dv_max
+
+        if dv_mag is not None and dv_cap is not None and dv_mag > dv_cap:
             continue
 
         parent_resolved = replace(
@@ -385,6 +405,7 @@ def resolve_lambert_leg(
             flyby_altitude=flyby_altitude,
             dv_periapsis=dv_mag,
             dv_periapsis_vec=dv_vec,
+            dv_limit=dv_cap,
         )
         prefix = tuple(parent_path[:-1]) + (parent_resolved,)
 
