@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from gtoc13.bodies import bodies_data
+from gtoc13.constants import DAY, YEAR
 from gtoc13.path_finding.beam.beam_search import BeamSearch
 from gtoc13.path_finding.beam.config import (
     BODY_TYPES,
@@ -67,13 +68,17 @@ hohmann_bounds_for_bodies = scoring_hohmann_bounds_for_bodies
 
 
 
+_DAYS_PER_YEAR = YEAR / DAY
+
+
 def _format_encounter(enc: Encounter, idx: int) -> str:
     vinf_in = "—" if enc.vinf_in is None else f"{enc.vinf_in:.3f}"
     vinf_out = "—" if enc.vinf_out is None else f"{enc.vinf_out:.3f}"
     dv = "—" if enc.dv_periapsis is None else f"{enc.dv_periapsis:.3f}"
     flyby = "?" if enc.flyby_valid is None else ("✓" if enc.flyby_valid else "×")
+    epoch_years = enc.t / _DAYS_PER_YEAR
     return (
-        f"    [{idx}] body={enc.body:3d} t={enc.t:10.2f} d  "
+        f"    [{idx}] body={enc.body:3d} t={epoch_years:9.3f} yr  "
         f"score={enc.J_total:10.4f}  v∞in={vinf_in:>7}  v∞out={vinf_out:>7}  "
         f"flyby={flyby}  dvp={dv}"
     )
@@ -133,7 +138,7 @@ def run_cli() -> None:
         "--tof-max",
         type=float,
         default=DEFAULT_TOF_MAX_DAYS,
-        help="Maximum total mission duration (days). Use a negative value to disable.",
+        help="Absolute upper bound on encounter epoch (days). Use a negative value to disable.",
     )
     parser.add_argument(
         "--top-k",
@@ -280,6 +285,10 @@ def run_cli() -> None:
         if vec is not None:
             args.start_vinf = tuple(float(x) for x in vec)
 
+    if config.tof_max_days is not None and args.start_epoch >= config.tof_max_days:
+        raise SystemExit(
+            f"Start epoch {args.start_epoch} days is not below the absolute TOF limit {config.tof_max_days}."
+        )
     if args.start_body not in bodies_data:
         available = ", ".join(str(k) for k in sorted(bodies_data.keys()))
         raise SystemExit(f"Unknown start body {args.start_body}. Available IDs: {available}")

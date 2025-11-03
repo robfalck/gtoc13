@@ -46,7 +46,6 @@ def make_expand_fn(
         if not path:
             return []
         last_body = path[-1].body
-        mission_start = path[0].t
         current_time = path[-1].t
         samples_same = same_body_samples if same_body_samples is not None else registry.tof_sample_count
 
@@ -105,8 +104,7 @@ def make_expand_fn(
                 if tof_days <= 0.0:
                     continue
                 arrival_time = current_time + tof_days
-                total_duration = arrival_time - mission_start
-                if config.tof_max_days is not None and total_duration > config.tof_max_days:
+                if config.tof_max_days is not None and arrival_time > config.tof_max_days:
                     continue
                 yield Proposal(body=tgt, tof=tof_days)
 
@@ -135,8 +133,7 @@ class BoundScoreFunction:
         parent = path[-1]
         t1 = parent.t + prop.tof
         if self.config.tof_max_days is not None:
-            mission_start = path[0].t
-            if (t1 - mission_start) > self.config.tof_max_days:
+            if t1 > self.config.tof_max_days:
                 return float("-inf"), path
         try:
             child_contrib, new_path = resolve_lambert_leg(
