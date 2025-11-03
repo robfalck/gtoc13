@@ -33,6 +33,8 @@ from gtoc13.path_finding.beam.config import (
     BodyRegistry,
     LambertConfig,
     DEFAULT_DV_MAX,
+    DEFAULT_DV_MODE,
+    DEFAULT_DV_FACTOR,
     DEFAULT_SCORE_MODE,
     DEFAULT_TOF_MAX_DAYS,
     DEFAULT_TOF_SAMPLE_COUNT,
@@ -108,6 +110,18 @@ def run_cli() -> None:
         type=float,
         default=DEFAULT_DV_MAX,
         help="Maximum allowed periapsis Δv (km/s). Use a negative value to disable pruning.",
+    )
+    parser.add_argument(
+        "--dv-mode",
+        choices=("fixed", "dynamic"),
+        default=DEFAULT_DV_MODE,
+        help="Δv pruning mode: 'fixed' enforces --dv-max, 'dynamic' uses the solar-sail heuristic.",
+    )
+    parser.add_argument(
+        "--dv-factor",
+        type=float,
+        default=DEFAULT_DV_FACTOR,
+        help="Efficiency factor for dynamic Δv mode (ignored when --dv-mode=fixed).",
     )
     parser.add_argument(
         "--vinf-max",
@@ -188,7 +202,24 @@ def run_cli() -> None:
     )
     args = parser.parse_args()
     tof_sample_count = max(1, int(args.tof_samples))
-    config = make_lambert_config(args.dv_max, args.vinf_max, args.tof_max)
+    dv_mode = (args.dv_mode or DEFAULT_DV_MODE).lower()
+    if dv_mode not in ("fixed", "dynamic"):
+        raise SystemExit(f"Unsupported --dv-mode '{args.dv_mode}'. Expected 'fixed' or 'dynamic'.")
+    if dv_mode == "dynamic":
+        if args.dv_factor is None or args.dv_factor <= 0.0:
+            raise SystemExit("--dv-factor must be positive when --dv-mode=dynamic.")
+        dv_max_value = None
+        dv_factor_value: Optional[float] = float(args.dv_factor)
+    else:
+        dv_max_value = args.dv_max
+        dv_factor_value = None
+    config = make_lambert_config(
+        dv_max_value,
+        args.vinf_max,
+        args.tof_max,
+        dv_mode=dv_mode,
+        dv_factor=dv_factor_value,
+    )
 
     raw_body_types = list(parse_body_type_string(args.body_types))
     if not raw_body_types:

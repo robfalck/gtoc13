@@ -42,6 +42,7 @@ def serialize_encounters(
                 "flyby_altitude_km": enc.flyby_altitude,
                 "periapsis_dv_mag_km_s": enc.dv_periapsis,
                 "periapsis_dv_vec_km_s": list(enc.dv_periapsis_vec) if enc.dv_periapsis_vec is not None else None,
+                "periapsis_dv_cap_km_s": enc.dv_limit,
                 "body_weight": body_weights.get(enc.body),
                 "cumulative_score": enc.J_total,
             }
@@ -82,6 +83,8 @@ def write_results(
             "max_depth": max_depth,
             "score_mode": score_mode,
             "dv_max": config.dv_max,
+            "dv_mode": config.dv_mode,
+            "dv_factor": config.dv_factor,
             "vinf_max": config.vinf_max,
             "tof_max_days": config.tof_max_days,
             "tof_samples": tof_samples,
