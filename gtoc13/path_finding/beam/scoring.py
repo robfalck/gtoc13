@@ -174,9 +174,7 @@ def score_leg_mission(
     total_score = mission_score(config, registry, candidate_path)
     if config.tof_max_days:
         tof_days = float(getattr(meta.proposal, "tof", 0.0))
-        mission_start = candidate_path[0].t
-        elapsed = float(child.t - mission_start)
-        remaining_budget = float(config.tof_max_days - elapsed)
+        remaining_budget = float(config.tof_max_days - child.t)
         effective_remaining = max(remaining_budget, 1e-6)
         scale = max(tof_days / effective_remaining, 1e-6)
         total_score /= scale
@@ -238,9 +236,7 @@ def score_leg_medium(
         return 0.0, child
 
     if config.tof_max_days:
-        mission_start = prefix[0].t if prefix else child.t - tof_days
-        elapsed = float(child.t - mission_start)
-        remaining_budget = float(config.tof_max_days - elapsed)
+        remaining_budget = float(config.tof_max_days - child.t)
         effective_remaining = max(remaining_budget, 1e-6)
         scale = max(tof_days / effective_remaining, 1e-6)
         base /= scale

@@ -11,7 +11,7 @@ from gtoc13.bodies import bodies_data
 DEFAULT_SUBMISSION_TIME_DAYS = 0.0
 DEFAULT_DV_MAX = 1.0  # km/s threshold for admissible powered flybys
 DEFAULT_VINF_MAX = 100.0  # km/s limit for hyperbolic excess
-DEFAULT_TOF_MAX_DAYS = 200.0 * 365.25  # ~200 years, expressed in days
+DEFAULT_TOF_MAX_DAYS = 200.0 * 365.25  # ~200 years, expressed in days (absolute epoch cutoff)
 DEFAULT_TOF_SAMPLE_COUNT = 200
 DEFAULT_SCORE_MODE = "medium"
 DEFAULT_DV_MODE = "fixed"
