@@ -4,6 +4,7 @@ import openmdao.api as om
 import dymos as dm
 
 from gtoc13.solution import GTOC13Solution
+from gtoc13.dymos_solver.ephem_comp import EphemComp
 
 
 def solve(bodies: Sequence[int], times: Sequence[float]) -> GTOC13Solution:
@@ -27,3 +28,17 @@ def solve(bodies: Sequence[int], times: Sequence[float]) -> GTOC13Solution:
     ValueError
         If dymos is unable to find a solution.
     """
+    
+    prob = om.Problem()
+
+    prob.model.add_subsystem('ephem', EphemComp(units='km/s', bodies=bodies))
+
+    prob.setup()
+
+    prob.set_val('ephem.times', times, units='year')
+
+    prob.run_model()
+
+
+if __name__ == '__main__':
+    solve(bodies=[10, 9], times=[0.0, 30.0, 40.0])
