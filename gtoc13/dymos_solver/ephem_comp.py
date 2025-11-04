@@ -29,27 +29,27 @@ class EphemComp(om.JaxExplicitComponent):
         v: Body velocity vector in km/s (n,)
     """
     def initialize(self):
-        self.options.declare('units', values=('km/s', 'DU/TU'), 
-                             desc='km/s for metric or DU/TU for canonical units')
         self.options.declare('bodies', types=Sequence,
                              desc='The bodies to be visited, in sequence')
 
     def setup(self):
-        n = len(self.options['bodies'])
-        self.add_input('times', shape=(n + 1,), units='year', desc='Time of each encounter, including the start time in element 0.')
-        self.add_output('body_pos', shape=(n, 3), units='AU', desc='Body position')
-        self.add_output('body_vel', shape=(n, 3), units='AU/year', desc='Body velocity')
+        N = len(self.options['bodies'])
+        self.add_input('t0', shape=(1,), val=0.0, units='year', desc='Initial time')
+        self.add_input('dt', shape=(N,), units='year', desc='Transfer time for each event.')
+        self.add_input('y0', shape=(1,), units='AU', desc='Initial y-position')
+        self.add_input('z0', shape=(1,), units='AU', desc='Initial z-position')
+        self.add_input('vx0', shape=(1,), units='AU/year', desc='Initial x-velocity')
+        self.add_output('event_pos', shape=(N + 1, 3), units='AU', desc='Positions at the starting time and each body intercept.')
+        self.add_output('event_vel', shape=(N + 1, 3), units='AU/year', desc='Velocities at the starting time and each body intercept.')
+        self.add_output('dt_dtau', shape=(N,), units='year', desc='Time span vs tau for each arc.')
+        self.add_output('times', shape=(N + 1,), units='year', desc='Times of events')
 
-        self._ELEMENTS = jnp.zeros((n, 6))
+        self._ELEMENTS = jnp.zeros((N, 6))
 
         for i, body_id in enumerate(self.options['bodies']):
             self._ELEMENTS = self._ELEMENTS.at[i, :].set(bodies_data[body_id].elements.to_array())
 
-        if self.options['units'] == 'DU/TU':
-            self._MU = 1.0
-            self._ELEMENTS = self._ELEMENTS.at[:, 0].set(self._ELEMENTS[:, 0] / KMPDU)
-        else:
-            self._MU = MU_ALTAIRA
+        self._MU = MU_ALTAIRA
         
         # Set check_partials options for finite differencing
         # Use relative step size because ephemeris data has limited resolution
@@ -65,9 +65,18 @@ class EphemComp(om.JaxExplicitComponent):
         """
         return (self._ELEMENTS, self._MU)
 
-    def compute_primal(self, times):
-        """Compute body ephemeris at given time."""
+    def compute_primal(self, t0, dt, y0, z0, vx0):
+        """Compute body ephemeris at given time and append to initial state."""
+        times = jnp.concatenate((t0, jnp.cumsum(dt)))
 
         body_pos, body_vel = elements_to_pos_vel(self._ELEMENTS, times[1:], self._MU)
 
-        return body_pos, body_vel
+        initial_pos = jnp.array([[-200, y0[0], z0[0]]])
+        initial_vel = jnp.array([[vx0[0], 0.0, 0.0]])
+
+        event_pos = jnp.vstack((initial_pos, body_pos))
+        event_vel = jnp.vstack((initial_vel, body_vel))
+
+        dt_dtau = dt / 2.0
+
+        return event_pos, event_vel, dt_dtau, times
