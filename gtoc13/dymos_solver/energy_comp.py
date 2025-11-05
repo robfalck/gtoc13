@@ -22,6 +22,5 @@ class EnergyComp(om.JaxExplicitComponent):
         v_vec = v_end.ravel()
 
         # Specific orbital energy: E = v²/2 - μ/r
-        E_end = jnp.dot(v_vec, v_vec) / 2.0 - MU_ALTAIRA / jnp.linalg.norm(r_vec)
-
+        E_end = jnp.array([jnp.dot(v_vec, v_vec) / 2.0 - MU_ALTAIRA / jnp.linalg.norm(r_vec)])
         return E_end

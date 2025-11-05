@@ -107,14 +107,17 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.add_timeseries_output('a_sail', units='km/s**2')
 
 
-    # prob.model.add_design_var('dt', lower=0.0, upper=200) 
+    prob.model.add_design_var('dt', lower=0.0, upper=200) 
     prob.model.add_design_var('y0', units='DU')
     prob.model.add_design_var('z0', units='DU')
+    prob.model.add_design_var('v_end', units='DU/TU')
+    prob.model.add_constraint('flyby_comp.v_inf_mag_defect', equals=0.0, units='DU/TU')
+    prob.model.add_constraint('flyby_comp.h_p_defect', upper=0.0, ref=1000.0)
     # prob.model.add_design_var('vx0', lower=0.0, units='DU/TU')
     # prob.model.add_design_var('v_final', units='DU/TU')
     phase.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
-    phase.add_objective('tau', loc='final')
-    # prob.model.add_objective('E_end')
+    # phase.add_objective('tau', loc='final')
+    prob.model.add_objective('E_end')
 
     prob.driver = om.pyOptSparseDriver(optimizer='IPOPT')
     prob.driver.opt_settings['print_level'] = 5
@@ -171,7 +174,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
 
             print(f'{body_id} {flag} {t_s_j[0]:.15e} {r_ij[0]:.15e} {r_ij[1]:.15e} {r_ij[2]:.15e} {v_ij[0]:.15e} {v_ij[1]:.15e} {v_ij[2]:.15e} {u_n_ij[0]:.15e} {u_n_ij[1]:.15e} {u_n_ij[2]:.15e}')
 
-    prob.model.list_vars(print_arrays=True)
+    # prob.model.list_vars(print_arrays=True)
 
 if __name__ == '__main__':
     solve(bodies=[10], dt=[5.0], t0=0.0, num_nodes=10)
