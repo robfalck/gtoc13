@@ -120,6 +120,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     prob.model.add_objective('E_end')
 
     prob.driver = om.pyOptSparseDriver(optimizer='IPOPT')
+    prob.driver.declare_coloring()  # Take advantage of sparsity.
     prob.driver.opt_settings['print_level'] = 5
     prob.driver.opt_settings['tol'] = 1.0E-5
 
