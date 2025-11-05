@@ -51,7 +51,7 @@ class SolarSailODEComp(om.JaxExplicitComponent):
                        desc='Velocity vectors')
         self.add_input('dt_dtau', shape=(num_nodes, N), units='s',
                        desc='Time conversion factor')
-        self.add_input('u_n', shape=(num_nodes, N, 3), units=None,
+        self.add_input('u_n', shape=(num_nodes, N, 3), units='unitless',
                        desc='Sail normal unit vectors')
 
         # Outputs - shape is (num_nodes, N, 3)
@@ -63,8 +63,9 @@ class SolarSailODEComp(om.JaxExplicitComponent):
                         desc='Acceleration due to gravity')
         self.add_output('a_sail', shape=(num_nodes, N, 3), units='km/s**2',
                         desc='Acceleration due to solar sail')
-        self.add_output('cos_alpha', shape=(num_nodes, N), units=None,
+        self.add_output('cos_alpha', shape=(num_nodes, N), units='unitless',
                         desc='Cosine of cone angle')
+        self.add_output('u_n_norm', shape=(num_nodes, N), units='unitless')
 
         # Store options as instance attributes for use in compute_primal
         self._mu = self.options['mu']
@@ -106,11 +107,19 @@ class SolarSailODEComp(om.JaxExplicitComponent):
             Position derivatives, shape (num_nodes, N, 3)
         dvdt : jnp.ndarray
             Velocity derivatives, shape (num_nodes, N, 3)
+        a_grav : jnp.ndarray
+            Acceleration vector due to gravity (num_nodes, N, 3)
+        a_sail : jnp.ndarray
+            Acceleration vector due to solar sail (num_nodes, N, 3)
         cos_alpha : jnp.ndarray
             Cosine of cone angle, shape (num_nodes, N)
+        u_n_norm : jnp.ndarray
+            The magnitude of the array normal.
         """
         drdt, dvdt, a_grav, a_sail, cos_alpha = self._solar_sail_ode_vec(
             r, v, dt_dtau, u_n, self._mu, self._r0
         )
 
-        return drdt, dvdt, a_grav, a_sail, cos_alpha
+        u_n_norm = jnp.linalg.norm(u_n, axis=-1)
+
+        return drdt, dvdt, a_grav, a_sail, cos_alpha, u_n_norm

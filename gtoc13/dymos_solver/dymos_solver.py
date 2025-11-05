@@ -7,6 +7,8 @@ import dymos as dm
 
 from gtoc13.solution import GTOC13Solution
 from gtoc13.dymos_solver.ephem_comp import EphemComp
+from gtoc13.dymos_solver.v_concat_comp import VConcatComp
+from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
 
 from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
 from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
@@ -54,17 +56,32 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
                      ode_init_kwargs={'N': N, 'r0': 1.0},
                      transcription=tx)
 
+    traj = dm.Trajectory()
+    traj.add_phase('all_arcs', phase, promotes_inputs=['parameters:dt_dtau', 'initial_states:*', 'final_states:*'])
+    prob.model.add_subsystem('traj', traj, promotes_inputs=[('parameters:dt_dtau', 'dt_dtau'), 'initial_states:*', 'final_states:*'])
+
+    # prob.model.add_subsystem('v_out_comp', VConcatComp(N=N), promotes_inputs=['v_final', 'arc_initial_states:v'])
+    
+    # prob.model.set_input_defaults('arc_initial_states:v', units='km/s', val=np.ones((N, 3))) 
+
+    prob.model.connect('event_pos', 'initial_states:r', src_indices=om.slicer[:-1, ...])
+    prob.model.connect('event_pos', 'final_states:r', src_indices=om.slicer[1:, ...])
+    # prob.model.connect('event_vel', 'traj.all_arcs.initial_states:v', src_indices=om.slicer[:-1, ...])
+
+
     phase.add_state('r', rate_source='drdt', units='DU',
                     shape=(N, 3), fix_initial=True, fix_final=True,
                     targets=['r'])
 
     phase.add_state('v', rate_source='dvdt', units='DU/TU',
-                    shape=(N, 3), fix_initial=True, fix_final=False,
+                    shape=(N, 3), fix_initial=False, fix_final=False,
                     targets=['v'], lower=-100, upper=100)
 
     # Control: sail normal unit vector (ballistic = zero for Keplerian orbit)
-    phase.add_control('u_n', units='unitless', shape=(N, 3), opt=False,
-                        val=np.zeros((N, 3)), targets=['u_n'])
+    phase.add_control('u_n', units='unitless', shape=(N, 3), opt=True,
+                        val=np.ones((N, 3)), targets=['u_n'])
+    if phase.control_options['u_n']['opt']:
+        phase.add_path_constraint('u_n_norm', equals=1.0)
 
     # Time conversion factor
     phase.add_parameter('dt_dtau', units='year', val=30/2.0, opt=False,
@@ -78,18 +95,12 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.add_timeseries_output('a_sail', units='km/s**2')
 
 
-    traj = dm.Trajectory()
-    traj.add_phase('all_arcs', phase, promotes_inputs=['parameters:dt_dtau'])
-    prob.model.add_subsystem('traj', traj, promotes_inputs=[('parameters:dt_dtau', 'dt_dtau')])
-
-    prob.model.connect('event_pos', 'traj.all_arcs.initial_states:r', src_indices=om.slicer[:-1, ...])
-    prob.model.connect('event_pos', 'traj.all_arcs.final_states:r', src_indices=om.slicer[1:, ...])
-    prob.model.connect('event_vel', 'traj.all_arcs.initial_states:v', src_indices=om.slicer[:-1, ...])
-
-    # prob.model.add_design_var('dt', lower=0.0, upper=200)
+    # prob.model.add_design_var('dt', lower=0.0, upper=200) 
     prob.model.add_design_var('y0', units='DU')
     prob.model.add_design_var('z0', units='DU')
-    prob.model.add_design_var('vx0', lower=0.0, upper=1000, units='DU/TU')
+    # prob.model.add_design_var('vx0', lower=0.0, units='DU/TU')
+    # prob.model.add_design_var('v_final', units='DU/TU')
+    phase.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
     phase.add_objective('tau', loc='final')
 
     prob.driver = om.pyOptSparseDriver(optimizer='IPOPT')
@@ -115,7 +126,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.set_state_val('v', vals=([v0, v0]), units='km/s')
     phase.set_time_val(initial=-1.0, duration=2.0, units='unitless')
     u_n = np.zeros((N, 3))
-    # # u_n[:, 0] = 1.0  # Keep u_n as zeros for ballistic trajectory
+    u_n[:, 0] = 1.0  # Keep u_n as zeros for ballistic trajectory
     phase.set_control_val('u_n', [u_n, u_n])
     phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='year')
 
