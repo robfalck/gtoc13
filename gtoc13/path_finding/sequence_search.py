@@ -111,8 +111,8 @@ with Timer():
             [
                 (k, i, m, j)
                 for (k, m) in list(product(k_body, repeat=2))
-                for i, tu_i in enumerate(discrete_data[k]["t_tu"])
-                for j, tu_j in enumerate(discrete_data[m]["t_tu"])
+                for i, __ in enumerate(discrete_data[k]["t_tu"])
+                for j, __ in enumerate(discrete_data[m]["t_tu"])
             ]
         ):
             k, i, m, j = kimj
@@ -151,36 +151,38 @@ with Timer():
         S.H = pyo.RangeSet(h_tot)  # sequence position index
 
         S.w_k = pyo.Param(
-            S.K, initialize=lambda model, k: bodies_data[k].weight, within=pyo.PositiveReals
+            tqdm(S.K), initialize=lambda model, k: bodies_data[k].weight, within=pyo.PositiveReals
         )  # scoring weights
 
         # Cartesian product sets
-        S.KT = pyo.Set(initialize=[(k, t) for k in S.K for t in S.T])
-        S.KIJ = pyo.Set(initialize=[(k, i, j) for k in S.K for i in S.T for j in range(1, i)])
-        S.KIMJ = pyo.Set(initialize=list(dv_1.keys()))
+        S.KT = pyo.Set(initialize=tqdm([(k, t) for k in S.K for t in S.T]))
+        S.KIJ = pyo.Set(initialize=tqdm([(k, i, j) for k in S.K for i in S.T for j in range(1, i)]))
+        S.KIMJ = pyo.Set(initialize=tqdm(list(dv_1.keys())))
 
         # Parameters requiring the Cartesian product sets
         S.tu_kt = pyo.Param(
-            S.KT,
+            tqdm(S.KT),
             initialize=lambda model, k, t: discrete_data[k]["t_tu"][t - 1].tolist(),
             within=pyo.NonNegativeReals,
         )
         S.rdu_kt = pyo.Param(
-            S.KT, initialize=lambda model, k, t: discrete_data[k]["r_du"][t - 1], within=pyo.Any
+            tqdm(S.KT),
+            initialize=lambda model, k, t: discrete_data[k]["r_du"][t - 1],
+            within=pyo.Any,
         )
 
         S.dv1_kimj = pyo.Param(
-            S.KIMJ, initialize=lambda model, k, i, m, j: dv_1[k, i, m, j], within=pyo.Any
+            tqdm(S.KIMJ), initialize=lambda model, k, i, m, j: dv_1[k, i, m, j], within=pyo.Any
         )
         S.dv2_kimj = pyo.Param(
-            S.KIMJ, initialize=lambda model, k, i, m, j: dv_2[k, i, m, j], within=pyo.Any
+            tqdm(S.KIMJ), initialize=lambda model, k, i, m, j: dv_2[k, i, m, j], within=pyo.Any
         )
 
     # x variables and constraints
     print("...create x_kth binary variable...")
     with Timer():
         # X Binary Decision Variable: k-th body, t-th timestep, and h-th position in the sequence
-        S.x_kth = pyo.Var(S.K * S.T * S.H, within=pyo.Binary)
+        S.x_kth = pyo.Var(tqdm(S.K * S.T * S.H), within=pyo.Binary)
 
     print("...create x parition constraint...")
     with Timer():
@@ -190,15 +192,15 @@ with Timer():
     print("...create x_kt* packing constraints...")
     with Timer():
         # for each (k,t), it can only exist in one position at most
-        S.x_kt_packing = pyo.ConstraintList()
-        for kt in tqdm(S.KT):
-            S.x_kt_packing.add(pyo.quicksum(S.x_kth[kt, :]) <= 1)
+        S.x_kt_packing = pyo.Constraint(
+            tqdm(S.KT), rule=lambda model, k, t: pyo.quicksum(S.x_kth[k, t, :]) <= 1
+        )
 
     print("...create x_**h partition constraints...")
     with Timer():
         # for each h, there must only be one body at some time
         S.x_h_packing = pyo.Constraint(
-            S.H,
+            tqdm(S.H),
             rule=lambda model, h: pyo.quicksum(model.x_kth[..., h]) == 1,
         )
 
@@ -206,38 +208,47 @@ with Timer():
     with Timer():
         # for each k, there can only be a total of N_k flybys counted
         S.flyby_limit = pyo.Constraint(
-            S.K,
+            tqdm(S.K),
             rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...]) <= Nk_lim,
         )
 
     print("...create x_*th monotonic time constraints...")
     with Timer():
         # for each h, the time must be greater than the previous h
-        S.monotonic_time = pyo.ConstraintList()
+
         dt_tol = (DAY / SPTU).tolist()
 
         def time_expr(model, h):
-            return pyo.quicksum(
-                model.tu_kt[k, t] * model.x_kth[k, t, h] for k in model.K for t in model.T
-            )
-
-        for h in S.H:
             if h > 1:
-                h_lhs = time_expr(S, h) - time_expr(S, h - 1)
-                S.monotonic_time.add(h_lhs >= dt_tol)
+                term = (
+                    pyo.quicksum(
+                        model.tu_kt[k, t] * model.x_kth[k, t, h] for k in model.K for t in model.T
+                    )
+                    - pyo.quicksum(
+                        model.tu_kt[k, t] * model.x_kth[k, t, h - 1]
+                        for k in model.K
+                        for t in model.T
+                    )
+                    >= dt_tol
+                )
+            else:
+                term = pyo.Constraint.Skip
+            return term
+
+        S.monotonic_time = pyo.Constraint(tqdm(S.H), rule=time_expr)
 
     # y variables and constraints
     print("...create y_kij indicator variable of previous j flybys for i-th flyby...")
     with Timer():
         # Y Binary Indicator Variable: k-th body, i-th timestep, j-th previous timestep
-        S.y_kij = pyo.Var(S.KIJ, within=pyo.Binary)
+        S.y_kij = pyo.Var(tqdm(S.KIJ), within=pyo.Binary)
 
     print("...create y_k** packing constraints...")
     with Timer():
         # the amount of total previous flybys cannot be greater than h_tot - 1
-        S.y_k_packing = pyo.ConstraintList()
-        for k in tqdm(S.K):
-            S.y_k_packing.add(pyo.quicksum(S.y_kij[k, ...]) <= factorial(Nk_lim - 1))
+        S.y_k_packing = pyo.Constraint(
+            tqdm(S.K), rule=lambda model, k: pyo.quicksum(S.y_kij[k, ...]) <= factorial(Nk_lim - 1)
+        )
 
     print("...create y_kij big-M constraints...")
     with Timer():
@@ -348,21 +359,13 @@ with Timer():
 
         S.L_arcs = pyo.Constraint(S.KIMJ * S.H, rule=h_arcs_expr)
 
-    # print("...create L_kimj indicator and delta-v limit constraints...")
-    # with Timer():
-    # toggle lambert idx
-    # S.L_ind_con = pyo.ConstraintList()
-    # S.L_dv_con = pyo.ConstraintList()
-    # S.L_implies_x = pyo.ConstraintList()
-    # for h in tqdm(S.H):
-    #     if h < S.H.at(-1):
-    #         for kimj in tqdm(S.KIMJ):
-    #             k, i, m, j = kimj
-    # S.L_implies_x.add(S.L_kimj[kimj] <= S.x_kth[k, i, h])
-    # S.L_implies_x.add(S.L_kimj[kimj] <= S.x_kth[m, j, h + 1])
-    # S.L_ind_con.add(S.x_kth[k, i, h] + S.x_kth[m, j, h + 1] <= 10 * S.L_kimj[kimj] + 1)
-    #             M.L_dv_con.add(M.L_kimj[kimj] * M.DV_i[kimj] <= dv_lim)
-    #             M.L_dv_con.add(M.L_kimj[kimj] * M.DV_j[kimj] <= dv_lim)
+    print("...create L_kimj delta-v limit constraints...")
+    with Timer():
+        # if the lambert arc is used, it must not exceed the dv limits.
+        S.dv_limit = pyo.ConstraintList()
+        for kimj in tqdm(S.KIMJ):
+            S.dv_limit.add(S.L_kimj[kimj] * S.dv1_kimj[kimj] <= dv_limit)
+            S.dv_limit.add(S.L_kimj[kimj] * S.dv2_kimj[kimj] <= dv_limit)
 
     print("...create grand tour bonus indicator variables Zp, Gp, Zc, Gc, and big-M constraints...")
     with Timer():
