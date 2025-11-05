@@ -14,7 +14,7 @@ class VConcatComp(om.JaxExplicitComponent):
 
         # The initial velocity of all but the first arc. These are the inertial
         # outgoing velocities for each flyby calc, except the final one.
-        self.add_input('arc_initial_states:v', primal_name='arc_initial_vel', shape=(self.options['N'], 3), units='km/s')
+        self.add_input('initial_states:v', primal_name='arc_initial_vel', shape=(self.options['N'], 3), units='km/s')
         self.add_output('flyby_v_out', shape=(self.options['N'], 3), units='km/s')
     
     def compute_primal(self, v_final, arc_initial_vel):

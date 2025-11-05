@@ -60,9 +60,9 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     traj.add_phase('all_arcs', phase, promotes_inputs=['parameters:dt_dtau', 'initial_states:*', 'final_states:*'])
     prob.model.add_subsystem('traj', traj, promotes_inputs=[('parameters:dt_dtau', 'dt_dtau'), 'initial_states:*', 'final_states:*'])
 
-    # prob.model.add_subsystem('v_out_comp', VConcatComp(N=N), promotes_inputs=['v_final', 'arc_initial_states:v'])
+    prob.model.add_subsystem('v_out_comp', VConcatComp(N=N), promotes_inputs=['v_final', 'initial_states:v'], promotes_outputs=['flyby_v_out'])
     
-    # prob.model.set_input_defaults('arc_initial_states:v', units='km/s', val=np.ones((N, 3))) 
+    prob.model.set_input_defaults('initial_states:v', units='km/s', val=np.ones((N, 3))) 
 
     prob.model.connect('event_pos', 'initial_states:r', src_indices=om.slicer[:-1, ...])
     prob.model.connect('event_pos', 'final_states:r', src_indices=om.slicer[1:, ...])
@@ -157,6 +157,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
 
             print(f'{body_id} {flag} {t_s_j[0]:.15e} {r_ij[0]:.15e} {r_ij[1]:.15e} {r_ij[2]:.15e} {v_ij[0]:.15e} {v_ij[1]:.15e} {v_ij[2]:.15e} {u_n_ij[0]:.15e} {u_n_ij[1]:.15e} {u_n_ij[2]:.15e}')
 
+    print(prob.get_val('flyby_v_out', units='km/s'))
 
 if __name__ == '__main__':
-    solve(bodies=[10], dt=[5.0], t0=0.0)
+    solve(bodies=[10], dt=[5.0], t0=0.0, num_nodes=10)
