@@ -254,6 +254,87 @@ def patched_conic_flyby(
     return h_p, is_valid
 
 
+def flyby_defects_in_out(
+    v_in: jnp.ndarray,
+    v_out: jnp.ndarray,
+    v_body: jnp.ndarray,
+    mu_body: float,
+    r_body: float
+) -> Tuple[float, float]:
+    """
+    Compute parameters which determine whether a flyby is valid.
+
+    Returns the body-centric difference between the incoming and
+    outgoing v-infinity magnitudes, and the parabolic defect associated
+    with the flyby altitude.
+
+    The h_p_defect uses a parabolic (C2 continuous) constraint:
+    - h_p_defect < 0: altitude is within valid range [0.1, 100] body radii
+    - h_p_defect = 0: altitude is at boundary (0.1 or 100 body radii)
+    - h_p_defect > 0: altitude violates constraints (< 0.1 or > 100 body radii)
+
+    The parabolic form provides smooth first and second derivatives, making
+    it easier to optimize as a constraint compared to ReLU-based formulations.
+
+    Args:
+        v_in: incoming inertial velocity (km/s, DU/TU, or AU/year)
+        v_out: outgoing inertial velocity (km/s, DU/TU, or AU/year)
+        v_body: body inertial velocity (km/s, DU/TU, or AU/year)
+        mu_body: GM of the body (km^3/s^2)
+        r_body: radius of the body (km)
+
+    Returns:
+        (v_inf_mag_defect, h_p_defect)
+    """
+    v_inf_in = v_in - v_body
+    v_inf_out = v_out - v_body
+
+    # V_inf magnitude defect
+    # Need to be the same from the body frame
+    v_inf_in_mag = jnp.linalg.norm(v_inf_in)
+    v_inf_out_mag = jnp.linalg.norm(v_inf_out)
+    v_inf_mag_defect = v_inf_out_mag - v_inf_in_mag
+
+    # Turn angle calculation
+    # For this purpose, use the average of the two v_inf magnitudes
+    # When defects are satisfied, they will be the same anyway.
+    cos_delta = jnp.dot(v_inf_out / v_inf_out_mag, v_inf_in / v_inf_in_mag)
+    cos_delta = jnp.clip(cos_delta, -1.0, 1.0)
+    delta = jnp.arccos(cos_delta)
+
+    # Compute flyby altitude from turn angle
+    sin_half_delta = jnp.sin(delta / 2.0)
+
+    # rp = (mu_body / v_inf^2) * (1/sin(delta/2) - 1)
+    rp = (mu_body / (v_inf_in_mag**2)) * (1.0 / sin_half_delta - 1.0)
+    h_p_norm = (rp - r_body) / r_body
+
+    # Compute altitude constraint defect (parabolic response)
+    # h_p_defect < 0 means altitude is valid (between 0.1 and 100 radii)
+    # h_p_defect = 0 at the boundaries (h_p_norm = 0.1 or 100)
+    # h_p_defect > 0 means altitude violates constraints (< 0.1 or > 100 radii)
+    #
+    # Parabolic form that opens upward:
+    # When h_lower < h_p_norm < h_upper:
+    #   - (h_p_norm - h_lower) > 0
+    #   - (h_p_norm - h_upper) < 0
+    #   - Product is negative (satisfied constraint)
+    # When h_p_norm < h_lower OR h_p_norm > h_upper:
+    #   - Both factors have same sign
+    #   - Product is positive (violated constraint)
+    h_lower = 0.1
+    h_upper = 100.0
+
+    print('rp', rp)
+    print('altitude', rp - r_body)
+    print('r_body', r_body)
+    print('h_p_norm', h_p_norm)
+
+    h_p_defect = (h_p_norm - h_lower) * (h_p_norm - h_upper)
+
+    return v_inf_mag_defect, h_p_defect
+
+
 @jit
 def seasonal_penalty(r_hat_current: jnp.ndarray, r_hat_previous: jnp.ndarray) -> float:
     """
