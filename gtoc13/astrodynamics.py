@@ -327,6 +327,10 @@ def flyby_defects_in_out(
 
     h_p_defect = (h_p_norm - h_lower) * (h_p_norm - h_upper)
 
+    print(v_inf_mag_defect)
+    print(h_p_norm)
+    print(h_p_defect)
+
     return v_inf_mag_defect, h_p_defect
 
 

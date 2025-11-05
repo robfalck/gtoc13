@@ -38,9 +38,9 @@ class EphemComp(om.JaxExplicitComponent):
         self.add_input('dt', shape=(N,), units='year', desc='Transfer time for each event.')
         self.add_input('y0', shape=(1,), units='DU', desc='Initial y-position')
         self.add_input('z0', shape=(1,), units='DU', desc='Initial z-position')
-        self.add_input('vx0', shape=(1,), units='DU/year', desc='Initial x-velocity')
+        # self.add_input('vx0', shape=(1,), units='DU/year', desc='Initial x-velocity')
         self.add_output('event_pos', shape=(N + 1, 3), units='km', desc='Positions at the starting time and each body intercept.')
-        self.add_output('event_vel', shape=(N + 1, 3), units='km/year', desc='Velocities at the starting time and each body intercept.')
+        self.add_output('body_vel', shape=(N, 3), units='km/s', desc='Intertial velocity of each body at intercept (km/s)')
         self.add_output('dt_dtau', shape=(N,), units='year', desc='Time span vs tau for each arc.')
         self.add_output('times', shape=(N + 1,), units='year', desc='Times of events')
 
@@ -69,7 +69,7 @@ class EphemComp(om.JaxExplicitComponent):
         # Convert JAX array to nested tuples so it's hashable
         return (self._ELEMENTS, self._MU)
 
-    def compute_primal(self, t0, dt, y0, z0, vx0):
+    def compute_primal(self, t0, dt, y0, z0):
         """Compute body ephemeris at given time and append to initial state.
 
         Parameters
@@ -82,8 +82,6 @@ class EphemComp(om.JaxExplicitComponent):
             Initial y position
         z0 : array
             Initial z position
-        vx0 : array
-            Initial x velocity
         ELEMENTS_tuple : tuple of tuples
             Orbital elements for each body (from get_self_statics, as nested tuples)
         MU : float
@@ -100,11 +98,9 @@ class EphemComp(om.JaxExplicitComponent):
         # Note: inputs are in DU, outputs must be in km
         # 1 DU = KMPAU km (defined in constants.py)
         initial_pos_km = jnp.array([[-200 * KMPDU, y0[0] * KMPDU, z0[0] * KMPDU]])
-        initial_vel_km = jnp.array([[vx0[0] * KMPDU, 0.0, 0.0]])
 
         event_pos = jnp.vstack((initial_pos_km, body_pos))
-        event_vel = jnp.vstack((initial_vel_km, body_vel))
 
         dt_dtau = dt / 2.0
 
-        return event_pos, event_vel, dt_dtau, times
+        return event_pos, body_vel, dt_dtau, times

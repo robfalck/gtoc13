@@ -9,6 +9,7 @@ from gtoc13.solution import GTOC13Solution
 from gtoc13.dymos_solver.ephem_comp import EphemComp
 from gtoc13.dymos_solver.v_concat_comp import VConcatComp
 from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
+from gtoc13.dymos_solver.energy_comp import EnergyComp
 
 from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
 from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
@@ -60,13 +61,23 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     traj.add_phase('all_arcs', phase, promotes_inputs=['parameters:dt_dtau', 'initial_states:*', 'final_states:*'])
     prob.model.add_subsystem('traj', traj, promotes_inputs=[('parameters:dt_dtau', 'dt_dtau'), 'initial_states:*', 'final_states:*'])
 
-    prob.model.add_subsystem('v_out_comp', VConcatComp(N=N), promotes_inputs=['v_final', 'initial_states:v'], promotes_outputs=['flyby_v_out'])
+    prob.model.add_subsystem('v_out_comp', VConcatComp(N=N), promotes_inputs=['v_end', 'initial_states:v'], promotes_outputs=['flyby_v_out'])
     
     prob.model.set_input_defaults('initial_states:v', units='km/s', val=np.ones((N, 3))) 
 
     prob.model.connect('event_pos', 'initial_states:r', src_indices=om.slicer[:-1, ...])
     prob.model.connect('event_pos', 'final_states:r', src_indices=om.slicer[1:, ...])
-    # prob.model.connect('event_vel', 'traj.all_arcs.initial_states:v', src_indices=om.slicer[:-1, ...])
+
+    prob.model.add_subsystem('flyby_comp', FlybyDefectComp(bodies=bodies),
+                             promotes_inputs=[('v_in', 'final_states:v')])
+    prob.model.connect('flyby_v_out', 'flyby_comp.v_out')
+    prob.model.set_input_defaults('final_states:v', units='km/s', val=np.ones((N, 3)))
+    prob.model.connect('body_vel', 'flyby_comp.v_body')
+
+    prob.model.add_subsystem('energy_comp', EnergyComp(),
+                             promotes_inputs=['v_end', 'r_end'],
+                             promotes_outputs=['E_end'])
+    prob.model.connect('event_pos', 'r_end', src_indices=om.slicer[-1, ...])
 
 
     phase.add_state('r', rate_source='drdt', units='DU',
@@ -82,6 +93,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
                         val=np.ones((N, 3)), targets=['u_n'])
     if phase.control_options['u_n']['opt']:
         phase.add_path_constraint('u_n_norm', equals=1.0)
+        phase.add_path_constraint('cos_alpha', lower=0.0)
 
     # Time conversion factor
     phase.add_parameter('dt_dtau', units='year', val=30/2.0, opt=False,
@@ -102,6 +114,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     # prob.model.add_design_var('v_final', units='DU/TU')
     phase.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
     phase.add_objective('tau', loc='final')
+    # prob.model.add_objective('E_end')
 
     prob.driver = om.pyOptSparseDriver(optimizer='IPOPT')
     prob.driver.opt_settings['print_level'] = 5
@@ -113,6 +126,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
 
     prob.set_val('t0', t0, units='year')
     prob.set_val('dt', dt, units='year')
+    prob.set_val('v_end', [6.43e+01, -7.38e-03, 1.678e-03], units='km/s')
 
     # Set initial guess - linearly interpolate between initial and final states
     r0 = np.array([[-29919574016.0, 7479893504.0, 0.000000000000]])
@@ -157,7 +171,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
 
             print(f'{body_id} {flag} {t_s_j[0]:.15e} {r_ij[0]:.15e} {r_ij[1]:.15e} {r_ij[2]:.15e} {v_ij[0]:.15e} {v_ij[1]:.15e} {v_ij[2]:.15e} {u_n_ij[0]:.15e} {u_n_ij[1]:.15e} {u_n_ij[2]:.15e}')
 
-    print(prob.get_val('flyby_v_out', units='km/s'))
+    prob.model.list_vars(print_arrays=True)
 
 if __name__ == '__main__':
     solve(bodies=[10], dt=[5.0], t0=0.0, num_nodes=10)
