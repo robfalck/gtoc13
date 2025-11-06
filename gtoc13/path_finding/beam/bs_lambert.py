@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from gtoc13.bodies import bodies_data
-from gtoc13.constants import DAY, YEAR
+from gtoc13.constants import DAY, YEAR, KMPAU
 from gtoc13.path_finding.beam.beam_search import BeamSearch
 from gtoc13.path_finding.beam.config import (
     BODY_TYPES,
@@ -40,6 +40,7 @@ from gtoc13.path_finding.beam.config import (
     DEFAULT_TOF_MAX_DAYS,
     DEFAULT_TOF_SAMPLE_COUNT,
     DEFAULT_VINF_MAX,
+    DEFAULT_RP_MIN_AU,
     build_body_registry,
     make_lambert_config,
     parse_body_type_string,
@@ -68,7 +69,7 @@ hohmann_bounds_for_bodies = scoring_hohmann_bounds_for_bodies
 
 
 
-_DAYS_PER_YEAR = YEAR / DAY
+_DAYS_PER_YEAR = float(YEAR / DAY)
 
 
 def _format_encounter(enc: Encounter, idx: int) -> str:
@@ -100,7 +101,7 @@ def run_cli() -> None:
         "--start-epoch",
         type=float,
         default=0.0,
-        help="Starting epoch in days.",
+        help="Starting epoch in years.",
     )
     parser.add_argument(
         "--start-vinf",
@@ -166,9 +167,9 @@ def run_cli() -> None:
     )
     parser.add_argument(
         "--score-mode",
-        choices=("mission", "medium", "simple", "depth"),
+        choices=("mission", "mission-raw", "medium", "simple", "depth"),
         default=DEFAULT_SCORE_MODE,
-        help="Scoring model: 'mission' uses compute_score; 'medium' mixes science heuristics; "
+        help="Scoring model: 'mission' uses compute_score with TOF scaling; 'mission-raw' skips the scaling; "
         "'simple' uses weight/TOF; 'depth' prioritizes unique, rapid legs for longer chains.",
     )
     parser.add_argument(
@@ -201,6 +202,12 @@ def run_cli() -> None:
         help="Number of sampled TOFs per candidate leg.",
     )
     parser.add_argument(
+        "--rp-min",
+        type=float,
+        default=DEFAULT_RP_MIN_AU,
+        help="Minimum allowed perihelion distance for Lambert arcs (AU). Use a negative value to disable.",
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Suppress per-depth progress logging.",
@@ -210,13 +217,12 @@ def run_cli() -> None:
     dv_mode = (args.dv_mode or DEFAULT_DV_MODE).lower()
     if dv_mode not in ("fixed", "dynamic"):
         raise SystemExit(f"Unsupported --dv-mode '{args.dv_mode}'. Expected 'fixed' or 'dynamic'.")
+    dv_max_value = args.dv_max
     if dv_mode == "dynamic":
         if args.dv_factor is None or args.dv_factor <= 0.0:
             raise SystemExit("--dv-factor must be positive when --dv-mode=dynamic.")
-        dv_max_value = None
         dv_factor_value: Optional[float] = float(args.dv_factor)
     else:
-        dv_max_value = args.dv_max
         dv_factor_value = None
     config = make_lambert_config(
         dv_max_value,
@@ -224,6 +230,7 @@ def run_cli() -> None:
         args.tof_max,
         dv_mode=dv_mode,
         dv_factor=dv_factor_value,
+        rp_min_au=args.rp_min,
     )
 
     raw_body_types = list(parse_body_type_string(args.body_types))
@@ -272,22 +279,29 @@ def run_cli() -> None:
             "Resuming from",
             resume_path,
             f"(rank={resume_meta['rank']}, encounter={resume_meta['encounter_index']})",
-            f"body={resume_meta['body']} epoch={resume_meta['epoch']:.3f} days",
+            f"body={resume_meta['body']} epoch={resume_meta['epoch'] / _DAYS_PER_YEAR:.3f} yr",
             flush=True,
         )
         resume_data = resume_meta
         resume_rank_val = resolved_rank
         resume_index_val = resolved_enc_idx
+
     if resume_data is not None:
+        start_epoch_days = float(resume_data["epoch"])
+        start_epoch_years = start_epoch_days / _DAYS_PER_YEAR
         args.start_body = resume_data["body"]
-        args.start_epoch = resume_data["epoch"]
         vec = resume_data["vinf_vec"]
         if vec is not None:
             args.start_vinf = tuple(float(x) for x in vec)
+    else:
+        start_epoch_years = float(args.start_epoch)
+        start_epoch_days = start_epoch_years * _DAYS_PER_YEAR
 
-    if config.tof_max_days is not None and args.start_epoch >= config.tof_max_days:
+    if config.tof_max_days is not None and start_epoch_days >= config.tof_max_days:
+        limit_years = config.tof_max_days / _DAYS_PER_YEAR
         raise SystemExit(
-            f"Start epoch {args.start_epoch} days is not below the absolute TOF limit {config.tof_max_days}."
+            f"Start epoch {start_epoch_years:.6f} years is not below the absolute TOF limit "
+            f"{limit_years:.6f} years."
         )
     if args.start_body not in bodies_data:
         available = ", ".join(str(k) for k in sorted(bodies_data.keys()))
@@ -315,11 +329,11 @@ def run_cli() -> None:
             raise SystemExit("Provided start v-infinity vector has near-zero magnitude.")
         vinf_vec_tuple = tuple(float(x) for x in vinf_vec)
 
-    start_r = ephemeris_position(args.start_body, args.start_epoch)
+    start_r = ephemeris_position(args.start_body, start_epoch_days)
     root_state: State = (
         Encounter(
             body=args.start_body,
-            t=float(args.start_epoch),
+            t=float(start_epoch_days),
             r=start_r,
             vinf_in=vinf_mag,
             vinf_in_vec=vinf_vec_tuple,
@@ -343,10 +357,13 @@ def run_cli() -> None:
         if args.no_progress:
             return
         if depth == 0:
+            rp_min_au = None if config.rp_min_km is None else config.rp_min_km / KMPAU
+            rp_str = "disabled" if rp_min_au is None else f"{rp_min_au:.3f} AU"
             summary = (
                 f"Beam search start: beam_width={args.beam_width}, max_depth={args.max_depth}, "
-                f"start_body={args.start_body}, score_mode={args.score_mode}, "
+                f"start_body={args.start_body}, start_epoch={start_epoch_years:.3f} yr, score_mode={args.score_mode}, "
                 f"dv_max={config.dv_max}, vinf_max={config.vinf_max}, tof_max={config.tof_max_days}, "
+                f"rp_min={rp_str}, "
                 f"tof_samples={registry.tof_sample_count}, body_types={','.join(sorted(normalized_types))}"
             )
             print(summary, flush=True)
@@ -376,6 +393,7 @@ def run_cli() -> None:
         score_chunksize=args.score_chunksize,
         parallel_backend=None if args.parallel == "none" else args.parallel,
         progress_fn=progress_logger,
+        return_top_k=max(args.beam_width, args.top_k),
     )
 
     final_nodes = beam.run(root_state)
@@ -432,7 +450,7 @@ def run_cli() -> None:
         io_utils.write_results(
             output_path,
             start_body=args.start_body,
-            start_epoch=args.start_epoch,
+            start_epoch=start_epoch_days,
             start_vinf=tuple(args.start_vinf) if args.start_vinf is not None else None,
             beam_width=args.beam_width,
             max_depth=args.max_depth,

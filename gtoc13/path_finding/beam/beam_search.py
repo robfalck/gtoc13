@@ -104,6 +104,7 @@ class BeamSearch:
         max_workers: Optional[int] = None,
         score_chunksize: int = 256,                   # batch size for scoring tasks
         progress_fn: Optional[Callable[[int, int, int, float, float], None]] = None,
+        return_top_k: Optional[int] = None,
     ) -> None:
         self.expand_fn = expand_fn
         self.score_fn = score_fn
@@ -115,16 +116,22 @@ class BeamSearch:
         self.max_workers = max_workers
         self.score_chunksize = max(1, int(score_chunksize))
         self.progress_fn = progress_fn
+        self._return_top_k = (
+            int(return_top_k) if (return_top_k is not None and return_top_k > 0) else self.beam_width
+        )
 
         # Internals
         self._next_id = 0
         self._nodes: dict[int, Node] = {}
+        self._global_best_heap: list[tuple[float, int, int]] = []
+        self._global_best_nodes: dict[int, Node] = {}
 
     # ---------------------------- Public API ---------------------------------
 
     def run(self, root_state: Any) -> List[Node]:
         """Run beam search from `root_state`. Return final top-K nodes."""
         root = self._make_node(None, root_state, depth=0, cum_score=0.0)
+        self._add_global_candidate(root)
         frontier: List[Node] = [root]
         total_start = time.perf_counter()
         if self.progress_fn is not None:
@@ -192,7 +199,7 @@ class BeamSearch:
             if all(self.is_terminal_fn(n) for n in frontier):
                 break
 
-        return self._top_k(frontier, self.beam_width)
+        return self._global_top()
 
     def reconstruct_path(self, node: Node) -> List[Any]:
         """Return states from root to `node` (inclusive)."""
@@ -226,6 +233,25 @@ class BeamSearch:
         top.sort(key=self._rank_key, reverse=True)
         return top
 
+    def _add_global_candidate(self, node: Node) -> None:
+        """Insert node into the global best tracker."""
+        if node.depth == 0:
+            return
+        heapq.heappush(self._global_best_heap, (node.cum_score, -node.id, node.id))
+        self._global_best_nodes[node.id] = node
+        while len(self._global_best_nodes) > self._return_top_k:
+            _, _, nid = heapq.heappop(self._global_best_heap)
+            if nid in self._global_best_nodes:
+                del self._global_best_nodes[nid]
+
+    def _global_top(self) -> List[Node]:
+        """Return globally best nodes sorted by score."""
+        nodes = list(self._global_best_nodes.values())
+        nodes.sort(key=self._rank_key, reverse=True)
+        if len(nodes) > self._return_top_k:
+            nodes = nodes[: self._return_top_k]
+        return nodes
+
     def _evaluate_and_build_children(self, expansions: List[Tuple[Node, Any]]) -> List[Node]:
         """Evaluate score_fn in parallel; build child nodes; drop infeasible."""
         # Chunk to control task granularity and IPC overhead
@@ -256,7 +282,9 @@ class BeamSearch:
                 continue
             parent = self._nodes[pid]
             child_state = resolved if resolved is not None else prop
-            children.append(self._make_node(parent.id, child_state, parent.depth + 1, parent.cum_score + inc))
+            child = self._make_node(parent.id, child_state, parent.depth + 1, parent.cum_score + inc)
+            self._add_global_candidate(child)
+            children.append(child)
         return children
 
 

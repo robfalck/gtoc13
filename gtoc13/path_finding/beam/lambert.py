@@ -196,6 +196,66 @@ def enumerate_lambert_solutions(
     return solutions
 
 
+def _requires_low_perihelion(
+    r_depart: np.ndarray,
+    v_depart: np.ndarray,
+    r_arrive: np.ndarray,
+    revolutions: int,
+    rp_min_km: float,
+) -> bool:
+    """Return True if the Lambert arc must pass below the configured perihelion floor."""
+
+    threshold = float(rp_min_km)
+    r1 = np.asarray(r_depart, dtype=float)
+    r2 = np.asarray(r_arrive, dtype=float)
+    v1 = np.asarray(v_depart, dtype=float)
+    r1_norm = np.linalg.norm(r1)
+    r2_norm = np.linalg.norm(r2)
+    if r1_norm <= 0.0 or r2_norm <= 0.0:
+        return False
+    if r1_norm < threshold or r2_norm < threshold:
+        return True
+
+    h_vec = np.cross(r1, v1)
+    h_norm = np.linalg.norm(h_vec)
+    if h_norm <= 1e-9:
+        return False
+
+    e_vec = np.cross(v1, h_vec) / MU_ALTAIRA - r1 / r1_norm
+    e = np.linalg.norm(e_vec)
+    if e < 1e-8:
+        # Nearly circular; radius stays close to |r|.
+        return False
+
+    peri_radius = (h_norm**2) / (MU_ALTAIRA * (1.0 + e))
+    tol = max(1e-6 * threshold, 1e-3)
+    if peri_radius >= threshold - tol:
+        return False
+
+    if revolutions is not None and revolutions > 0:
+        return True
+
+    def _true_anomaly(r_vec: np.ndarray) -> float:
+        cos_nu = np.dot(e_vec, r_vec) / (e * np.linalg.norm(r_vec))
+        cos_nu = float(np.clip(cos_nu, -1.0, 1.0))
+        nu = math.acos(cos_nu)
+        direction = np.dot(np.cross(e_vec, r_vec), h_vec)
+        if direction < 0.0:
+            nu = 2.0 * math.pi - nu
+        return nu
+
+    nu1 = _true_anomaly(r1)
+    nu2 = _true_anomaly(r2)
+    if math.isclose(nu1, nu2, abs_tol=1e-9):
+        return False
+
+    wraps_peri = nu2 < nu1
+    if not wraps_peri:
+        return False
+
+    return True
+
+
 def _unit_vector(vec: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norm = np.linalg.norm(vec)
     if norm < eps:
@@ -372,6 +432,25 @@ def resolve_lambert_leg(
         vinf_out_vec_tuple = tuple(float(x) for x in vinf_out_vec)
         vinf_in_vec_tuple = tuple(float(x) for x in vinf_in_vec)
 
+        if config.rp_min_km is not None:
+            r_start = sol.get("r1")
+            v_start = sol.get("v1")
+            r_end = sol.get("r2")
+            rev_count = int(sol.get("rev", 0)) if sol.get("rev") is not None else 0
+            if (
+                r_start is not None
+                and v_start is not None
+                and r_end is not None
+                and _requires_low_perihelion(
+                    r_start,
+                    v_start,
+                    r_end,
+                    rev_count,
+                    config.rp_min_km,
+                )
+            ):
+                continue
+
         flyby_valid, flyby_altitude, dv_mag, dv_vec = evaluate_flyby(
             parent.body, parent.vinf_in_vec, vinf_out_vec_tuple
         )
@@ -391,6 +470,8 @@ def resolve_lambert_leg(
                     tof_days,
                     factor=float(factor),
                 )
+            if dv_cap is not None and config.dv_max is not None:
+                dv_cap = min(dv_cap, config.dv_max)
         else:
             dv_cap = config.dv_max
 
