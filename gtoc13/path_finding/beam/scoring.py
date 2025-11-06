@@ -183,6 +183,21 @@ def score_leg_mission(
     return child_contrib, updated_child
 
 
+def score_leg_mission_raw(
+    config: LambertConfig,
+    registry: BodyRegistry,
+    prefix: Sequence[Encounter],
+    parent: Encounter,
+    child: Encounter,
+    meta: LambertLegMeta,
+) -> Tuple[float, Encounter]:
+    candidate_path = tuple(prefix) + (child,)
+    total_score = mission_score(config, registry, candidate_path)
+    child_contrib = total_score - parent.J_total
+    updated_child = replace(child, J_total=total_score)
+    return child_contrib, updated_child
+
+
 def score_leg_medium(
     config: LambertConfig,
     registry: BodyRegistry,
@@ -326,6 +341,7 @@ SCORING_FUNCTIONS: Dict[
     Callable[[LambertConfig, BodyRegistry, Sequence[Encounter], Encounter, Encounter, LambertLegMeta], Tuple[float, Encounter]],
 ] = {
     "mission": score_leg_mission,
+    "mission-raw": score_leg_mission_raw,
     "medium": score_leg_medium,
     "simple": score_leg_simple,
     "depth": score_leg_depth,
@@ -348,5 +364,6 @@ __all__ = [
     "score_leg_depth",
     "score_leg_medium",
     "score_leg_mission",
+    "score_leg_mission_raw",
     "score_leg_simple",
 ]

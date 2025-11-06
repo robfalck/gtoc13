@@ -155,7 +155,7 @@ def make_score_fn(
 
 
 def key_fn(state: State) -> Hashable:
-    """Coarse deduplication bucket keyed by encounter bins and visited bodies."""
+    """Coarse deduplication bucket keyed by encounter bins and visit history."""
 
     if not state:
         return ("root",)
@@ -170,7 +170,8 @@ def key_fn(state: State) -> Hashable:
     vinf = -1.0 if last.vinf_in is None else last.vinf_in
     vinf_bin = int(round(vinf / 1.0))  # 1 km/s bins for hyperbolic excess magnitude
     visited_bodies = tuple(sorted({enc.body for enc in state}))
-    return (last.body, visited_bodies, tof_bin, vinf_bin, bin_width)
+    tail_bodies = tuple(enc.body for enc in state[-2:])
+    return (last.body, visited_bodies, tail_bodies, tof_bin, vinf_bin, bin_width)
 
 
 __all__ = ["Proposal", "Vec3", "make_expand_fn", "make_score_fn", "key_fn", "BoundScoreFunction"]

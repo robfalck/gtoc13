@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Tuple
 
 from gtoc13.bodies import bodies_data
+from gtoc13.constants import KMPAU
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -16,6 +17,7 @@ DEFAULT_TOF_SAMPLE_COUNT = 200
 DEFAULT_SCORE_MODE = "medium"
 DEFAULT_DV_MODE = "fixed"
 DEFAULT_DV_FACTOR = 0.25
+DEFAULT_RP_MIN_AU = 0.05  # minimum perihelion distance (AU)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,7 @@ class LambertConfig:
     dv_max: Optional[float]
     vinf_max: Optional[float]
     tof_max_days: Optional[float]
+    rp_min_km: Optional[float] = DEFAULT_RP_MIN_AU * KMPAU
     dv_mode: str = DEFAULT_DV_MODE
     dv_factor: Optional[float] = DEFAULT_DV_FACTOR
     submission_time_days: float = DEFAULT_SUBMISSION_TIME_DAYS
@@ -80,6 +83,7 @@ def make_lambert_config(
     dv_mode: str = DEFAULT_DV_MODE,
     dv_factor: Optional[float] = DEFAULT_DV_FACTOR,
     submission_time_days: float = DEFAULT_SUBMISSION_TIME_DAYS,
+    rp_min_au: Optional[float] = DEFAULT_RP_MIN_AU,
 ) -> LambertConfig:
     """Normalize CLI-style inputs into a LambertConfig."""
     dv = None if dv_max is not None and dv_max < 0 else dv_max
@@ -89,10 +93,15 @@ def make_lambert_config(
     factor = dv_factor
     if factor is not None and factor <= 0.0:
         factor = 0.0
+    if rp_min_au is None or rp_min_au < 0.0:
+        rp_min_km = None
+    else:
+        rp_min_km = float(rp_min_au) * KMPAU
     return LambertConfig(
         dv_max=dv,
         vinf_max=vinf,
         tof_max_days=tof,
+        rp_min_km=rp_min_km,
         dv_mode=mode,
         dv_factor=factor,
         submission_time_days=submission_time_days,

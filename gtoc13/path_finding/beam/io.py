@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
 import json
 
 from .config import LambertConfig
+from gtoc13.constants import KMPAU
 from .lambert import Encounter
 
 
@@ -87,6 +88,7 @@ def write_results(
             "dv_factor": config.dv_factor,
             "vinf_max": config.vinf_max,
             "tof_max_days": config.tof_max_days,
+            "rp_min_au": None if config.rp_min_km is None else (config.rp_min_km / KMPAU),
             "tof_samples": tof_samples,
             "body_types": ",".join(sorted(body_types)),
             "top_k": top_k,
