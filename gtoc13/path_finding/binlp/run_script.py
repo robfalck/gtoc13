@@ -27,9 +27,9 @@ import numpy as np
 # from pathlib import Path
 
 from gtoc13 import DAY, KMPDU, SPTU, YEAR, bodies_data
+from binlp_utils import Timer, lin_dots_penalty
 
 from tqdm import tqdm
-import time
 from itertools import product
 from pprint import pprint
 from math import factorial
@@ -37,47 +37,17 @@ from math import factorial
 np.set_printoptions(legacy="1.25")
 ############### CONFIG ###############
 Yo = 0
-Yf = 10
+Yf = 5
 perYear = 4
 dv_limit = 2000
-h_tot = 5  # sequence length
-gt_bodies = 5
+h_tot = 3  # sequence length
+gt_bodies = 3
 gt_smalls = 13
 Nk_lim = 3  # 13
 sol_iter = 1
 solver_log = True
-solver = "gurobi"  # AMPL-format solvers
+solver = "scip"  # AMPL-format solvers
 ############# END CONFIG #############
-
-
-class Timer:
-    def __enter__(self):
-        self._enter_time = time.time()
-
-    def __exit__(self, *exc_args):
-        self._exit_time = time.time()
-        print(f"{self._exit_time - self._enter_time:.2f} seconds elapsed\n")
-
-
-def lin_dots_penalty(r_i, r_j):
-    dots = np.clip(np.dot(r_i, r_j) / (np.linalg.norm(r_i) * np.linalg.norm(r_j)), -1.0, 1.0)
-    if dots < 0.875:
-        return 0.0
-    else:
-        return np.clip(  # polynomial fit of penalty
-            3e-07 * dots**6
-            - 2e-05 * dots**5
-            + 0.0006 * dots**4
-            - 0.0072 * dots**3
-            + 0.0426 * dots**2
-            - 0.108 * dots
-            + 1.0822,
-            0,
-            1,
-        )
-
-
-##############################################################################################
 print(">>>>> CREATE DISCRETIZED DATASET <<<<<\n")
 with Timer():
     #############
@@ -94,6 +64,7 @@ with Timer():
             if body.is_planet() or body.name == "Yandi":
                 timestep = np.linspace(To, Tf, num) / SPTU
                 discrete_data[b_idx] = dict(
+                    weight=body.weight,
                     r_du=np.array([body.get_state(timestep[idx]).r / KMPDU for idx in range(num)]),
                     v_dtu=np.array(
                         [body.get_state(timestep[idx]).v * SPTU / KMPDU for idx in range(num)]
@@ -380,25 +351,25 @@ with Timer():
 
     print("...create grand tour bonus indicator variables Zp, Gp, Zc, Gc, and big-M constraints...")
     with Timer():
-        S.count_k_planets = pyo.Var(tqdm(S.K), within=pyo.Binary)  # planets and yandi
+        S.planet_visited = pyo.Var(tqdm(S.K), within=pyo.Binary)  # planets and yandi
         S.all_planets = pyo.Var(initialize=0, within=pyo.Binary)  # all planets indicator
         S.count_p_bigm = pyo.ConstraintList()
 
         S.count_p_bigm1 = pyo.Constraint(
             tqdm(S.K),
             rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...])
-            <= 2 * num * model.count_k_planets[k],
+            <= 2 * num * model.planet_visited[k],
         )
         S.count_p_bigm2 = pyo.Constraint(
             tqdm(S.K),
             rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...]) - 1
-            >= 2 * num * (model.count_k_planets[k] - 1),
+            >= 2 * num * (model.planet_visited[k] - 1),
         )
         S.all_planets_bigm1 = pyo.Constraint(
-            rule=pyo.summation(S.count_k_planets) - gt_bodies <= S.all_planets * 20
+            rule=pyo.summation(S.planet_visited) - gt_bodies <= S.all_planets * 20
         )
         S.all_planets_bigm2 = pyo.Constraint(
-            rule=pyo.summation(S.count_k_planets) - gt_bodies >= (S.all_planets - 1) * 20
+            rule=pyo.summation(S.planet_visited) - gt_bodies >= (S.all_planets - 1) * 20
         )
 
     ##### Objective Function and Scoring #####
@@ -454,7 +425,6 @@ if results.solver.termination_condition == TerminationCondition.infeasible:
 else:
     sequence = []
     for kt in S.KT:
-
         k, t = kt
         for h in S.H:
             value = pyo.value(S.x_kth[kt, h])
@@ -514,7 +484,7 @@ else:
 
             print("\n>>>>> RUN SOLVER <<<<<\n")
             results = solver.solve(S, tee=solver_log)
-            print(f"\n...iteration {sol+1} solved...\n")
+            print(f"\n...iteration {sol + 1} solved...\n")
             if results.solver.termination_condition == TerminationCondition.infeasible:
                 print("Infeasible, sorry :(")
             else:
@@ -569,9 +539,9 @@ else:
                         if pyo.value(v) > 0.5:
                             print(k)
 
-                print(f"\n...iteration {sol+1} complete...\n")
+                print(f"\n...iteration {sol + 1} complete...\n")
                 if sol + 2 <= sol_iter:
-                    print(f"...start no-good cuts for iteration {sol+2}...")
+                    print(f"...start no-good cuts for iteration {sol + 2}...")
 
 
 print(">>>>> FINISHED RUNNING SOLVER <<<<<\n\n")
