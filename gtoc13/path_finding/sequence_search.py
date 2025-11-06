@@ -21,36 +21,32 @@ x_tkh : binary variable for
 """
 
 import pyomo.environ as pyo
-import pyomo.contrib.iis as iis
-import pyomo.util.report_scaling as scaling
-import pyomo.util.model_size as m_size
 from pyomo.opt import SolverFactory, TerminationCondition
-import os
 import numpy as np
 
 # from pathlib import Path
 
-from gtoc13 import DAY, KMPDU, SPTU, YEAR, MU_ALTAIRA, bodies_data
+from gtoc13 import DAY, KMPDU, SPTU, YEAR, bodies_data
 
-from pykep import lambert_problem
 from tqdm import tqdm
 import time
 from itertools import product
 from pprint import pprint
 from math import factorial
 
+np.set_printoptions(legacy="1.25")
 ############### CONFIG ###############
 Yo = 0
-Yf = 6
-perYear = 2
-dv_limit = 3000
-h_tot = 3  # sequence length
-gt_bodies = 3
+Yf = 10
+perYear = 4
+dv_limit = 2000
+h_tot = 5  # sequence length
+gt_bodies = 5
 gt_smalls = 13
 Nk_lim = 3  # 13
 sol_iter = 1
 solver_log = True
-solver = "scip"  # AMPL-format solvers
+solver = "gurobi"  # AMPL-format solvers
 ############# END CONFIG #############
 
 
@@ -99,6 +95,9 @@ with Timer():
                 timestep = np.linspace(To, Tf, num) / SPTU
                 discrete_data[b_idx] = dict(
                     r_du=np.array([body.get_state(timestep[idx]).r / KMPDU for idx in range(num)]),
+                    v_dtu=np.array(
+                        [body.get_state(timestep[idx]).v * SPTU / KMPDU for idx in range(num)]
+                    ),
                     t_tu=timestep,
                 )
 
@@ -116,16 +115,24 @@ with Timer():
             ]
         ):
             k, i, m, j = kimj
-            tof = (discrete_data[m]["t_tu"][j] - discrete_data[k]["t_tu"][i]).tolist()
+            tu_i = discrete_data[k]["t_tu"][i]
+            tu_j = discrete_data[m]["t_tu"][j]
+            vk_dtu_i = discrete_data[k]["v_dtu"][i]
+            vm_dtu_j = discrete_data[m]["v_dtu"][j]
+            tof = (tu_j - tu_i).tolist()
             # if tof > 0:
             #     ki_to_mj = lambert_problem(
             #         r1=discrete_data[k]["r_du"][i].tolist(),
             #         r2=discrete_data[m]["r_du"][j].tolist(),
-            #         tof=(discrete_data[m]["t_tu"][j] - discrete_data[k]["t_tu"][i]).tolist(),
+            #         tof=(tu_j - tu_i).tolist(),
+            #     )
+            #     dv_1[(k, i + 1, m, j + 1)] = np.linalg.norm(
+            #         np.array(ki_to_mj.get_v1()[0]) - vk_dtu_i
+            #     )
+            #     dv_2[(k, i + 1, m, j + 1)] = np.linalg.norm(
+            #         np.array(ki_to_mj.get_v2()[0]) - vm_dtu_j
             #     )
 
-            #     dv_1[(k, i + 1, m, j + 1)] = np.array(ki_to_mj.get_v1()[0])
-            #     dv_2[(k, i + 1, m, j + 1)] = np.array(ki_to_mj.get_v2()[0])
             # else:
             dv_1[(k, i + 1, m, j + 1)], dv_2[(k, i + 1, m, j + 1)] = np.random.rand(2) * (
                 dv_limit + 50.0
@@ -193,7 +200,7 @@ with Timer():
     with Timer():
         # for each (k,t), it can only exist in one position at most
         S.x_kt_packing = pyo.Constraint(
-            tqdm(S.KT), rule=lambda model, k, t: pyo.quicksum(S.x_kth[k, t, :]) <= 1
+            tqdm(S.KT), rule=lambda model, k, t: pyo.quicksum(model.x_kth[k, t, :]) <= 1
         )
 
     print("...create x_**h partition constraints...")
@@ -218,7 +225,7 @@ with Timer():
 
         dt_tol = (DAY / SPTU).tolist()
 
-        def time_expr(model, h):
+        def monotime_rule(model, h):
             if h > 1:
                 term = (
                     pyo.quicksum(
@@ -235,7 +242,7 @@ with Timer():
                 term = pyo.Constraint.Skip
             return term
 
-        S.monotonic_time = pyo.Constraint(tqdm(S.H), rule=time_expr)
+        S.monotonic_time = pyo.Constraint(tqdm(S.H), rule=monotime_rule)
 
     # y variables and constraints
     print("...create y_kij indicator variable of previous j flybys for i-th flyby...")
@@ -247,94 +254,93 @@ with Timer():
     with Timer():
         # the amount of total previous flybys cannot be greater than h_tot - 1
         S.y_k_packing = pyo.Constraint(
-            tqdm(S.K), rule=lambda model, k: pyo.quicksum(S.y_kij[k, ...]) <= factorial(Nk_lim - 1)
+            tqdm(S.K),
+            rule=lambda model, k: pyo.quicksum(model.y_kij[k, ...]) <= factorial(Nk_lim - 1),
         )
 
     print("...create y_kij big-M constraints...")
     with Timer():
-        S.y_kij_bigm = pyo.ConstraintList()
-        for kij in tqdm(S.KIJ):
-            k, i, j = kij
-            y_kij_lhs = pyo.quicksum(S.x_kth[k, i, h] + S.x_kth[k, j, h] for h in S.H)
-            S.y_kij_bigm.add(y_kij_lhs <= 10 * S.y_kij[kij] + 1)
-            S.y_kij_bigm.add(y_kij_lhs >= 2 - 10 * (1 - S.y_kij[kij]))
+        # if there is both x_ki* and x_kj*, then there must be a y_kij
+        S.y_bigm1_x = pyo.Constraint(
+            tqdm(S.KIJ),
+            rule=lambda model, k, i, j: pyo.quicksum(
+                model.x_kth[k, i, h] + model.x_kth[k, j, h] for h in model.H
+            )
+            <= 10 * model.y_kij[k, i, j] + 1,
+        )
+        # if there isn't both x_ki* and x_kj*, then there cannot be a y_kij
+        S.y_bigm2_x = pyo.Constraint(
+            tqdm(S.KIJ),
+            rule=lambda model, k, i, j: pyo.quicksum(
+                model.x_kth[k, i, h] + model.x_kth[k, j, h] for h in model.H
+            )
+            >= 2 - 10 * (1 - model.y_kij[k, i, j]),
+        )
 
     print("...create z_kt indicator variable of first flyby at t for body k...")
     with Timer():
         # Z Binary Indicator Variable: k-th body, j-th first flyby timestep
-        S.z_kt = pyo.Var(S.KT, within=pyo.Binary)
+        S.z_kt = pyo.Var(tqdm(S.KT), within=pyo.Binary)
 
     print("...create z_k* packing constraints...")
     with Timer():
         # at most only ONE first flyby for body k
-        S.z_k_packing = pyo.Constraint(S.K, rule=lambda model, k: pyo.quicksum(S.z_kt[k, :]) <= 1)
+        S.z_k_packing = pyo.Constraint(
+            tqdm(S.K), rule=lambda model, k: pyo.quicksum(model.z_kt[k, :]) <= 1
+        )
 
     print("...create z_k* and z_kt implication constraints...")
     with Timer():
-        S.z_implies_x = pyo.ConstraintList()
         # if there is a flyby at that time, then (k, t) can be a first flyby
-        for kt in tqdm(S.KT):
-            S.z_implies_x.add(S.z_kt[kt] <= pyo.quicksum(S.x_kth[kt, :]))
-
-        S.z_bigm_x = pyo.ConstraintList()
+        S.z_implies_x = pyo.Constraint(
+            tqdm(S.KT),
+            rule=lambda model, k, t: model.z_kt[k, t] <= pyo.quicksum(model.x_kth[k, t, :]),
+        )
         # if there is a flyby for body k, then there must be a first flyby for k.
-        for k in tqdm(S.K):
-            S.z_bigm_x.add(h_tot * pyo.quicksum(S.z_kt[k, :]) >= pyo.quicksum(S.x_kth[k, ...]))
-
-        S.z_implies_not_y = pyo.ConstraintList()
+        S.z_bigm_x = pyo.Constraint(
+            tqdm(S.K),
+            rule=lambda model, k: h_tot * pyo.quicksum(model.z_kt[k, :])
+            >= pyo.quicksum(model.x_kth[k, ...]),
+        )
         # if there are previous flybys at time i, i cannot be a first flyby
-        for kt in tqdm(S.KT):
-            k, t = kt
-            if t > 1:
-                S.z_implies_not_y.add(S.z_kt[k, t] <= 1 - pyo.quicksum(S.y_kij[k, t, :]))
+        S.z_implies_not_y = pyo.Constraint(
+            tqdm(S.KT),
+            rule=lambda model, k, t: (
+                model.z_kt[k, t] <= 1 - pyo.quicksum(model.y_kij[k, t, :])
+                if t > 1
+                else pyo.Constraint.Feasible
+            ),
+        )
 
-    print("...create (z_kt, y_kij, k_kth) -> S(r_kij) seasonal penalty terms...")
-    with Timer():
-        flyby_kt = {kt: [] for kt in S.KT}
-        # first flyby score
-        for kt in tqdm(S.KT):
-            flyby_kt[kt] = S.z_kt[kt]
-
-        # subsequent flybys
-        lin_term = 0
-        for kij in tqdm(S.KIJ):
-            k, i, j = kij
-            lin_term += lin_dots_penalty(S.rdu_kt[k, i], S.rdu_kt[k, j]) * S.y_kij[kij]
-            if j == i - 1:
-                flyby_kt[k, i] = lin_term
-                lin_term = 0
-
-    #### LAMBERT VARIABLES #####
-    print("...create L_kimj dv table indicator variables...")
+    print("...create L_kimj arc indicator variables...")
     with Timer():
         # bodies k and m, times i and j
-        S.L_kimj = pyo.Var(S.KIMJ, within=pyo.Binary)
+        S.L_kimj = pyo.Var(tqdm(S.KIMJ), within=pyo.Binary)
 
     print("...create L_ki** and L_**mj implication constraints...")
     with Timer():
         # if x_kt* isn't 1, then there can't be an L_kt** or L_**kt
         S.L_implies_x_nodes = pyo.Constraint(
-            S.KIMJ,
+            tqdm(S.KIMJ),
             rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * 2
-            <= pyo.quicksum(model.x_kth[k, i, :]) + pyo.quicksum(model.x_kth[m, j, :]),
+            <= pyo.quicksum(model.x_kth[k, i, h] + model.x_kth[m, j, h] for h in model.H),
         )
 
     print("...create L_kt** and L_**kt packing constraints...")
     with Timer():
         # each k, t node can only have at most one start and end.
         S.L_single_start = pyo.Constraint(
-            S.KT, rule=lambda model, k, t: pyo.quicksum(model.L_kimj[k, t, ...]) <= 1
+            tqdm(S.KT), rule=lambda model, k, t: pyo.quicksum(model.L_kimj[k, t, ...]) <= 1
         )
         S.L_single_end = pyo.Constraint(
-            S.KT,
-            rule=lambda model, k, t: 1 >= pyo.quicksum(model.L_kimj[..., k, t]),
+            tqdm(S.KT), rule=lambda model, k, t: 1 >= pyo.quicksum(model.L_kimj[..., k, t])
         )
 
     print("...create L_kimj positive dt constraints...")
     with Timer():
         # if L_kimj is selected, it must have a positive delta-t
         S.positive_dt = pyo.Constraint(
-            S.KIMJ,
+            tqdm(S.KIMJ),
             rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j]
             * (model.tu_kt[m, j] - model.tu_kt[k, i])
             >= 0,
@@ -357,40 +363,66 @@ with Timer():
                 term = pyo.Constraint.Skip
             return term
 
-        S.L_arcs = pyo.Constraint(S.KIMJ * S.H, rule=h_arcs_expr)
+        S.L_arcs = pyo.Constraint(tqdm(S.KIMJ * S.H), rule=h_arcs_expr)
 
     print("...create L_kimj delta-v limit constraints...")
     with Timer():
         # if the lambert arc is used, it must not exceed the dv limits.
-        S.dv_limit = pyo.ConstraintList()
-        for kimj in tqdm(S.KIMJ):
-            S.dv_limit.add(S.L_kimj[kimj] * S.dv1_kimj[kimj] <= dv_limit)
-            S.dv_limit.add(S.L_kimj[kimj] * S.dv2_kimj[kimj] <= dv_limit)
+        S.dv1_limit = pyo.Constraint(
+            tqdm(S.KIMJ),
+            rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * model.dv1_kimj[k, i, m, j]
+            <= dv_limit,
+        )
+        S.dv2_limit = pyo.Constraint(
+            tqdm(S.KIMJ),
+            rule=lambda model, k, i, m, j: model.L_kimj[kimj] * model.dv2_kimj[kimj] <= dv_limit,
+        )
 
     print("...create grand tour bonus indicator variables Zp, Gp, Zc, Gc, and big-M constraints...")
     with Timer():
-        S.count_k_planets = pyo.Var(S.K, within=pyo.Binary)  # planets and yandi
+        S.count_k_planets = pyo.Var(tqdm(S.K), within=pyo.Binary)  # planets and yandi
         S.all_planets = pyo.Var(initialize=0, within=pyo.Binary)  # all planets indicator
         S.count_p_bigm = pyo.ConstraintList()
-        for k in S.K:
-            count_p_lhs = pyo.quicksum(S.x_kth[k, t, h] for h in S.H for t in S.T)
-            S.count_p_bigm.add(count_p_lhs <= 2 * num * S.count_k_planets[k])
-            S.count_p_bigm.add(count_p_lhs - 1 >= 2 * num * (S.count_k_planets[k] - 1))
 
-        S.all_planets_bigm = pyo.ConstraintList()
-        S.all_planets_bigm.add(
-            pyo.quicksum(S.count_k_planets[k] for k in S.K) - gt_bodies <= S.all_planets * 20
+        S.count_p_bigm1 = pyo.Constraint(
+            tqdm(S.K),
+            rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...])
+            <= 2 * num * model.count_k_planets[k],
         )
-        S.all_planets_bigm.add(
-            pyo.quicksum(S.count_k_planets[k] for k in S.K) - gt_bodies >= (S.all_planets - 1) * 20
+        S.count_p_bigm2 = pyo.Constraint(
+            tqdm(S.K),
+            rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...]) - 1
+            >= 2 * num * (model.count_k_planets[k] - 1),
         )
-        GT_bonus = 1.0 + 0.3 * S.all_planets
+        S.all_planets_bigm1 = pyo.Constraint(
+            rule=pyo.summation(S.count_k_planets) - gt_bodies <= S.all_planets * 20
+        )
+        S.all_planets_bigm2 = pyo.Constraint(
+            rule=pyo.summation(S.count_k_planets) - gt_bodies >= (S.all_planets - 1) * 20
+        )
 
-    # Objective function
+    ##### Objective Function and Scoring #####
+    print("...create (z_kt, y_kij, k_kth) -> S(r_kij) seasonal penalty terms...")
+    with Timer():
+        flyby_kt = {kt: [] for kt in S.KT}
+        # first flyby score
+        for kt in tqdm(S.KT):
+            flyby_kt[kt] = S.z_kt[kt]
+
+        # subsequent flybys
+        lin_term = 0
+        for kij in tqdm(S.KIJ):
+            k, i, j = kij
+            lin_term += lin_dots_penalty(S.rdu_kt[k, i], S.rdu_kt[k, j]) * S.y_kij[kij]
+            if j == i - 1:
+                flyby_kt[k, i] = lin_term
+                lin_term = 0
+
     print("...create objective function...")
     with Timer():
+        GT_bonus = 1.0 + 0.3 * S.all_planets
         S.maximize_score = pyo.Objective(
-            rule=GT_bonus * pyo.quicksum(S.w_k[k] * flyby_kt[kt] for kt in S.KT),
+            rule=GT_bonus * pyo.quicksum(S.w_k[k] * flyby_kt[kt] for kt in tqdm(S.KT)),
             sense=pyo.maximize,
         )
 
@@ -418,8 +450,7 @@ print("\n...iteration 1 solved...\n")
 
 if results.solver.termination_condition == TerminationCondition.infeasible:
     print("Infeasible, sorry :(\n")
-    # print("...generate miniminal intractable system...")
-    # iis.compute_infeasibility_explanation(S, solver="scip")
+
 else:
     sequence = []
     for kt in S.KT:
@@ -428,11 +459,12 @@ else:
         for h in S.H:
             value = pyo.value(S.x_kth[kt, h])
             if value > 0.5:
+                tu = np.round((discrete_data[k]["t_tu"][t] * SPTU / YEAR).tolist(), 3)
                 sequence.append(
                     (
                         h,
-                        (bodies_data[k].name, kt),
-                        np.round((discrete_data[k]["t_tu"][t] * SPTU / YEAR), 3).tolist(),
+                        [bodies_data[k].name, kt],
+                        f"{tu} years",
                     )
                 )
     sequence = sorted(sequence, key=lambda x: x[2])
@@ -442,27 +474,27 @@ else:
     print("\n")
     if S.find_component("L_kimj"):
         print("Number of lambert arcs: ", int(np.round(pyo.value(pyo.summation(S.L_kimj)))), "\n")
-        print("Lambert arcs (from k @ t[i], to m @ t[j]):")
+        print("Lambert arcs (k, i) to (m, j):")
         lambert_arcs = [
-            [short_seq.index((k, i)), (k, i), (m, j)]
+            [short_seq.index((k, i)) + 1, f"({k}, {i}) to ({m}, {j})"]
             for (k, i, m, j), v in S.L_kimj.items()
             if pyo.value(v) > 0.5
         ]
         lambert_arcs = sorted(lambert_arcs)
         for arc in lambert_arcs:
-            print(arc[1:])
+            print(arc)
         print("\n")
     print("Number of repeated flybys:", int(np.round(pyo.value(pyo.summation(S.y_kij)))), "\n")
     print("First flyby keys (k, i-th):")
     for k, v in S.z_kt.items():
         if pyo.value(v) > 0.5:
             print(k)
-
-    print("\n")
-    print("Repeat flyby keys (k, i-th, j-th prev):")
-    for k, v in S.y_kij.items():
-        if pyo.value(v) > 0.5:
-            print(k)
+    if pyo.value(pyo.summation(S.y_kij) > 0):
+        print("\n")
+        print("Repeat flyby keys (k, i-th, j-th prev):")
+        for k, v in S.y_kij.items():
+            if pyo.value(v) > 0.5:
+                print(k)
     print("\n...iteration 1 complete...\n")
 
     if sol_iter > 1:
@@ -485,8 +517,6 @@ else:
             print(f"\n...iteration {sol+1} solved...\n")
             if results.solver.termination_condition == TerminationCondition.infeasible:
                 print("Infeasible, sorry :(")
-                # print("...generate miniminal intractable system...")
-                # iis.compute_infeasibility_explanation(S, solver="scip")
             else:
                 sequence = []
                 for kt in S.KT:
@@ -494,13 +524,12 @@ else:
                     for h in S.H:
                         value = pyo.value(S.x_kth[kt, h])
                         if value > 0.5:
+                            tu = np.round((discrete_data[k]["t_tu"][t] * SPTU / YEAR).tolist(), 3)
                             sequence.append(
                                 (
                                     h,
-                                    (bodies_data[k].name, kt),
-                                    np.round(
-                                        (discrete_data[k]["t_tu"][t] * SPTU / YEAR), 3
-                                    ).tolist(),
+                                    [bodies_data[k].name, kt],
+                                    f"{tu} years",
                                 )
                             )
                 sequence = sorted(sequence, key=lambda x: x[2])
@@ -514,15 +543,15 @@ else:
                         int(np.round(pyo.value(pyo.summation(S.L_kimj)))),
                         "\n",
                     )
-                    print("Lambert arcs (from k @ t[i], to m @ t[j]):")
+                    print("Lambert arcs (k, i) to (m, j):")
                     lambert_arcs = [
-                        [short_seq.index((k, i)), (k, i), (m, j)]
+                        [short_seq.index((k, i)) + 1, f"({k}, {i}) to ({m}, {j})"]
                         for (k, i, m, j), v in S.L_kimj.items()
                         if pyo.value(v) > 0.5
                     ]
                     lambert_arcs = sorted(lambert_arcs)
                     for arc in lambert_arcs:
-                        print(arc[1:])
+                        print(arc)
                     print("\n")
                 print(
                     "Number of repeated flybys: ",
@@ -533,11 +562,12 @@ else:
                 for k, v in S.z_kt.items():
                     if pyo.value(v) > 0.5:
                         print(k)
-                print("\n")
-                print("Repeat flyby keys (k, i-th, j-th prev):")
-                for k, v in S.y_kij.items():
-                    if pyo.value(v) > 0.5:
-                        print(k)
+                if pyo.value(pyo.summation(S.y_kij) > 0):
+                    print("\n")
+                    print("Repeat flyby keys (k, i-th, j-th prev):")
+                    for k, v in S.y_kij.items():
+                        if pyo.value(v) > 0.5:
+                            print(k)
 
                 print(f"\n...iteration {sol+1} complete...\n")
                 if sol + 2 <= sol_iter:
