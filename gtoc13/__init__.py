@@ -1,7 +1,7 @@
 from .orbital_elements import OrbitalElements
 from .cartesian_state import CartesianState
 
-from .astrodynamics import (
+from .constants import (
     # Constants
     KMPAU,
     KMPDU,
@@ -14,19 +14,25 @@ from .astrodynamics import (
     R0,
     SAIL_AREA,
     SPACECRAFT_MASS,
+)
 
+from .astrodynamics import (
     # Functions
     solve_kepler,
     elements_to_cartesian,
-    solar_sail_acceleration,
-    keplerian_derivatives,
-    solar_sail_derivatives,
     compute_v_infinity,
     patched_conic_flyby,
     seasonal_penalty,
     flyby_velocity_penalty,
     time_bonus,
     compute_score,
+)
+
+from .odes import (
+    # ODE functions
+    solar_sail_acceleration,
+    ballistic_ode,
+    solar_sail_ode,
 )
 
 from .solution import (
@@ -82,15 +88,17 @@ __all__ = [
     # Functions
     "solve_kepler",
     "elements_to_cartesian",
-    "solar_sail_acceleration",
-    "keplerian_derivatives",
-    "solar_sail_derivatives",
     "compute_v_infinity",
     "patched_conic_flyby",
     "seasonal_penalty",
     "flyby_velocity_penalty",
     "time_bonus",
     "compute_score",
+
+    # ODE functions
+    "solar_sail_acceleration",
+    "ballistic_ode",
+    "solar_sail_ode",
 
     # Solution models
     "StatePoint",
