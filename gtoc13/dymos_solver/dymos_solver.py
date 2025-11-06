@@ -5,7 +5,9 @@ import openmdao.api as om
 import openmdao.utils.units as om_units
 import dymos as dm
 
-from gtoc13.solution import GTOC13Solution
+from gtoc13 import bodies_data, GTOC13Solution, PropagatedArc, FlybyArc, ConicArc
+from gtoc13.constants import MU_ALTAIRA, KMPAU
+
 from gtoc13.dymos_solver.ephem_comp import EphemComp
 from gtoc13.dymos_solver.v_concat_comp import VConcatComp
 from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
@@ -13,9 +15,7 @@ from gtoc13.dymos_solver.energy_comp import EnergyComp
 
 from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
 from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
-from gtoc13.constants import MU_ALTAIRA, KMPAU
 
-from gtoc13.solution import GTOC13Solution, PropagatedArc, FlybyArc, ConicArc
 
 # Add our specific DU and TU to OpenMDAO's recognized units.
 om_units.add_unit('DU', f'{KMPAU}*1000*m')
@@ -110,7 +110,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.add_timeseries_output('a_sail', units='km/s**2')
     phase.add_timeseries_output('u_n_norm', units='unitless')
 
-    prob.model.add_design_var('dt', lower=0.0, upper=10) 
+    prob.model.add_design_var('dt', lower=0.0, upper=20) 
     prob.model.add_design_var('y0', units='DU')
     prob.model.add_design_var('z0', units='DU')
     prob.model.add_design_var('v_end', units='DU/TU')
@@ -140,7 +140,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     # prob.driver.opt_settings['mu_strategy'] = 'monotone'
     prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
 
-    phase.set_simulate_options(times_per_seg=50)
+    phase.set_simulate_options(times_per_seg=50, atol=1.0E-12, rtol=1.0E-12)
 
     prob.setup()
 
@@ -165,7 +165,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='year')
 
     # # Run the problem
-    dm.run_problem(prob, run_driver=True, simulate=True)
+    dm.run_problem(prob, run_driver=True, simulate=True, refine_iteration_limit=10)
 
     # # prob.run_model()
     
@@ -192,10 +192,11 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     flyby_v_inf_in = flyby_comp.get_val('v_inf_in', units='km/s')
     flyby_v_inf_out = flyby_comp.get_val('v_inf_out', units='km/s')
 
-    flyby_body_pos = prob.get_val('event_pos')[1:, :]
+    event_pos = prob.get_val('event_pos', units='km')
 
     arcs = []
     for i in range(N):
+        # Use the simulation outputs to write the arc
         t_i = t0_s + dt_dtau_s_sim[i] * (tau_sim + 1.0)
         r_i = r_sim[:, i, :]
         v_i = v_sim[:, i, :]
@@ -212,7 +213,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
         # each flyby is for science.
         arcs.append(FlybyArc.create(body_id=bodies[i],
                                     epoch=t_flyby_i,
-                                    position=flyby_body_pos[i],
+                                    position=event_pos[i+1],
                                     velocity_in=flyby_v_in[i],
                                     velocity_out=flyby_v_out[i],
                                     v_inf_in=flyby_v_inf_in[i],
@@ -228,23 +229,21 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     solutions_dir.mkdir(exist_ok=True)
 
     index = 1
-    while (solutions_dir / f'solution_{index}.txt').exists():
+    while (solutions_dir / f'dymos_solution_{index}.txt').exists():
         index += 1
 
-    solution_file = solutions_dir / f'solution_{index}.txt'
-    solution.write_to_file(solution_file)
+    solution_file = solutions_dir / f'dymos_solution_{index}.txt'
+    solution.write_to_file(solution_file, precision=11)
     print(f"Solution written to {solution_file}")
 
+    print(times)
+    print(event_pos[1,:])
+    print(bodies_data[10].get_state(times[1]))
+
+    prob.model.ephem.list_vars(print_arrays=True, units=True)
+
     return solution
-        # for node_j in range(num_nodes):
-        #     r_ij = r[node_j, arc_i, :]
-        #     v_ij = v[node_j, arc_i, :]
-        #     u_n_ij = u_n[node_j, arc_i, :]
-        #     t_s_j = t0_s + dt_dtau_s[arc_i] * (tau[node_j] + 1.0)
 
-        #     print(f'{body_id} {flag} {t_s_j[0]:.15e} {r_ij[0]:.15e} {r_ij[1]:.15e} {r_ij[2]:.15e} {v_ij[0]:.15e} {v_ij[1]:.15e} {v_ij[2]:.15e} {u_n_ij[0]:.15e} {u_n_ij[1]:.15e} {u_n_ij[2]:.15e}')
-
-    # prob.model.list_vars(print_arrays=True)
 
 if __name__ == '__main__':
-    solve(bodies=[10], dt=[5.0], t0=0.0, num_nodes=20)
+    solve(bodies=[10], dt=[20.0], t0=0.0, num_nodes=30)

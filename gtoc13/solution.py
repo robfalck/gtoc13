@@ -350,7 +350,7 @@ class GTOC13Solution(BaseModel):
                 t_start = arc.state_points[0].epoch / YEAR
                 t_end = arc.state_points[-1].epoch / YEAR
                 stream.write(f"# Propagated Arc: Body 0 (heliocentric) from t={t_start:.6f} years to t={t_end:.6f} years\n")
-                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{precision+8}} "
+                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
                            f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
                            f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
                            f"{'cx':>{precision+8}} {'cy':>{precision+8}} {'cz':>{precision+8}}\n")
@@ -359,7 +359,7 @@ class GTOC13Solution(BaseModel):
                 t_start = arc.epoch_start / YEAR
                 t_end = arc.epoch_end / YEAR
                 stream.write(f"# Conic Arc: Body 0 (heliocentric) from t={t_start:.6f} years to t={t_end:.6f} years\n")
-                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{precision+8}} "
+                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
                            f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
                            f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
                            f"{'cx':>{precision+8}} {'cy':>{precision+8}} {'cz':>{precision+8}}\n")
@@ -374,7 +374,7 @@ class GTOC13Solution(BaseModel):
                 # Calculate v_inf magnitude from the incoming v_inf vector
                 v_inf_mag = np.sqrt(arc.v_inf_in[0]**2 + arc.v_inf_in[1]**2 + arc.v_inf_in[2]**2)
                 stream.write(f"# Flyby of Body {arc.body_id}{name_str} at t={t_flyby:.6f} years, v_inf={v_inf_mag:.6f} km/s\n")
-                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{precision+8}} "
+                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
                            f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
                            f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
                            f"{'v_inf_x':>{precision+8}} {'v_inf_y':>{precision+8}} {'v_inf_z':>{precision+8}}\n")
@@ -383,7 +383,7 @@ class GTOC13Solution(BaseModel):
             for point in arc.to_state_points():
                 # Format with specified precision (scientific notation)
                 line = (
-                    f"  {point.body_id:>10d} {point.flag:>6d} {point.epoch:>{precision+8}.{precision}e} "
+                    f"  {point.body_id:>10d} {point.flag:>6d} {point.epoch:>{16+8}.{16}e} "
                     f"{point.position[0]:>{precision+8}.{precision}e} {point.position[1]:>{precision+8}.{precision}e} {point.position[2]:>{precision+8}.{precision}e} "
                     f"{point.velocity[0]:>{precision+8}.{precision}e} {point.velocity[1]:>{precision+8}.{precision}e} {point.velocity[2]:>{precision+8}.{precision}e} "
                     f"{point.control[0]:>{precision+8}.{precision}e} {point.control[1]:>{precision+8}.{precision}e} {point.control[2]:>{precision+8}.{precision}e}\n"

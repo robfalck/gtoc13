@@ -1,3 +1,7 @@
+# Configure JAX to use double precision (64-bit floats) throughout the package
+import jax
+jax.config.update("jax_enable_x64", True)
+
 from .orbital_elements import OrbitalElements
 from .cartesian_state import CartesianState
 

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import openmdao.api as om
 
 from gtoc13.bodies import bodies_data
-from gtoc13.constants import MU_ALTAIRA, KMPDU
+from gtoc13.constants import MU_ALTAIRA, KMPDU, YEAR
 from gtoc13.astrodynamics import elements_to_pos_vel
 
 
@@ -92,7 +92,8 @@ class EphemComp(om.JaxExplicitComponent):
 
         times = jnp.concatenate((t0, jnp.cumsum(dt)))
 
-        body_pos, body_vel = elements_to_pos_vel(ELEMENTS, times[1:], self._MU)
+        # Using MU in km**3/s**2, make sure to pass times in seconds, not years.
+        body_pos, body_vel = elements_to_pos_vel(ELEMENTS, YEAR * times[1:], self._MU)
 
         # Convert initial conditions from DU to km
         # Note: inputs are in DU, outputs must be in km

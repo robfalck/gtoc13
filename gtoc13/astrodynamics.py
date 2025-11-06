@@ -154,7 +154,7 @@ def elements_to_pos_vel(elements: jnp.ndarray, t: float, mu=MU_ALTAIRA) -> Tuple
     M = M0 + n * t
     
     # Solve for eccentric anomaly
-    E = solve_kepler_vec(M, e, tol=1.0E-10, max_iter=50)
+    E = solve_kepler_vec(M, e, tol=1.0E-15, max_iter=100)
     
     # True anomaly
     theta = 2.0 * jnp.arctan2(
