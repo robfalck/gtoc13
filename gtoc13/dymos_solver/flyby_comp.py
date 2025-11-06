@@ -64,6 +64,10 @@ class FlybyDefectComp(om.JaxExplicitComponent):
                        desc='Body inertial velocities')
 
         # Outputs: defects for each flyby
+        self.add_output('v_inf_in', shape=(N, 3), units='km/s',
+                        desc='Incoming V-infinity vector')
+        self.add_output('v_inf_out', shape=(N, 3), units='km/s',
+                        desc='Outgoing V-infinity vector')
         self.add_output('v_inf_mag_defect', shape=(N,), units='km/s',
                         desc='V-infinity magnitude defects')
         self.add_output('h_p_defect', shape=(N,), units='unitless',
@@ -118,19 +122,23 @@ class FlybyDefectComp(om.JaxExplicitComponent):
         N = len(mu_body)
 
         # Initialize output arrays
+        v_inf_in = jnp.zeros((N, 3))
+        v_inf_out = jnp.zeros((N, 3))
         v_inf_mag_defect = jnp.zeros(N)
         h_p_defect = jnp.zeros(N)
 
         # Compute defects for each flyby
         for i in range(N):
-            v_inf_defect, h_p_def = flyby_defects_in_out(
+            v_inf_in_i, v_inf_out_i, v_inf_defect, h_p_def = flyby_defects_in_out(
                 v_in[i, :],
                 v_out[i, :],
                 v_body[i, :],
                 mu_body[i],
                 r_body[i]
             )
+            v_inf_in = v_inf_in.at[i].set(v_inf_in_i)
+            v_inf_out = v_inf_out.at[i].set(v_inf_out_i)
             v_inf_mag_defect = v_inf_mag_defect.at[i].set(v_inf_defect)
             h_p_defect = h_p_defect.at[i].set(h_p_def)
 
-        return v_inf_mag_defect, h_p_defect
+        return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect

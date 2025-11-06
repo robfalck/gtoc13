@@ -284,7 +284,7 @@ def flyby_defects_in_out(
         r_body: radius of the body (km)
 
     Returns:
-        (v_inf_mag_defect, h_p_defect)
+        (v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect)
     """
     v_inf_in = v_in - v_body
     v_inf_out = v_out - v_body
@@ -327,7 +327,7 @@ def flyby_defects_in_out(
 
     h_p_defect = (h_p_norm - h_lower) * (h_p_norm - h_upper)
 
-    return v_inf_mag_defect, h_p_defect
+    return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect
 
 
 @jit

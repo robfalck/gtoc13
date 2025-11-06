@@ -42,11 +42,6 @@ from .solution import (
     ConicArc,
     PropagatedArc,
     GTOC13Solution,
-
-    # Convenience functions
-    create_flyby,
-    create_conic,
-    create_propagated,
 )
 
 from .lambert import (
@@ -106,11 +101,6 @@ __all__ = [
     "ConicArc",
     "PropagatedArc",
     "GTOC13Solution",
-
-    # Convenience functions
-    "create_flyby",
-    "create_conic",
-    "create_propagated",
 
     # Lambert solver
     "lambert",
