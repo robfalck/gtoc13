@@ -11,6 +11,18 @@ np.set_printoptions(legacy="1.25")
 
 @dataclass
 class IndexParams:
+    """
+    Parameters that dictate the dimensionality of the BINLP problem.
+
+    bodies_ID : list of body indices for the model
+    n_timesteps : number of discretizations for time and position per body, does not indicate equal delta-ts!
+    seq_length : target number of bodies
+    flyby_limit : max number of scientific flybys that will count towards scoring
+    gt_planets : number of unique planets (large) needed for the grand tour bonus
+    first_arcs : list of initial planets and timestep index bounds to pre-constraint the model
+
+    """
+
     bodies_ID: list[int]
     n_timesteps: int
     seq_length: int
@@ -53,6 +65,17 @@ class DiscreteDict:
 
 @dataclass
 class SolverParams:
+    """
+    Parameters that dictate solver behavior and solution generation.
+
+    solver_name : str of AMPL solver to use
+    toconsole : display the solver's default output logs to console
+    write_nl : create a .nl file with the model for debugging purposes
+    write_log : write the output log to file
+    solv_iter : number of solver iterations for the problem
+
+    """
+
     solver_name: str
     toconsole: bool = True
     write_nl: bool = False
@@ -112,7 +135,7 @@ def lin_dots_penalty(r_i: np.array, r_j: np.array) -> np.float32:
 @timer
 def create_discrete_dataset(
     Yo: float, Yf: float, bodies_data: dict, perYear: int = 2
-) -> DiscreteDict:
+) -> tuple[DiscreteDict, list[int], int]:
     To = Yo * YEAR
     Tf = Yf * YEAR  # years in seconds
     num = int(np.ceil((Tf - To) / (YEAR / perYear)))

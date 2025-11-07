@@ -1,5 +1,10 @@
 """
-Main run script.
+Main run script to create the Pyomo BINLP model and solve it for
+a prescribed number of solutions (problem can be degenerate based
+on parameters).
+
+Only edit the entries between the ###### lines. Returns a list of
+solution sequences based on number of iterations.
 
 """
 
@@ -7,7 +12,7 @@ import pyomo.environ as pyo
 import logging
 from gtoc13 import bodies_data
 from binlp_utils import Timer, create_discrete_dataset, IndexParams, SolverParams
-from gtoc13.path_finding.binlp.problem_builder import (
+from problem_builder import (
     initialize_model,
     x_vars_and_constrs,
     y_vars_and_constrs,
@@ -18,7 +23,7 @@ from gtoc13.path_finding.binlp.problem_builder import (
 )
 from solver_outputs import generate_solutions
 
-############### CONFIG ###############
+############### EDIT CONFIG ###############
 debug = False
 input_dict = dict(Yo=0, Yf=10, perYear=1, bodies_data=bodies_data)
 discrete_data, k_body, num = create_discrete_dataset(**input_dict)
@@ -34,7 +39,7 @@ pidxs_params = IndexParams(
 solv_params = SolverParams(
     solver_name="scip",  # AMPL-format solvers
 )
-############# END CONFIG #############
+###########################################
 
 if debug:
     logging.getLogger("pyomo").setLevel(logging.DEBUG)

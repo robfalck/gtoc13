@@ -8,22 +8,6 @@ from APML.
 NOTE: users need to update their environment according to the pyproject.toml
 and run `conda install scip`.
 
-Indices:
------------
-k :
-t, i, j :
-h :
-
-
-Variables:
------------
-x[k,t,h] : primary binary variable to select body k at timestep t for position h
-y[k,i,j] : binary variable for body k flyby at timestep i with a previous flyby at timestep j
-z[k,t] : binary variable for FIRST body k flyby at timestep t
-# L[k,i,m,j] : binary variable indicating a trajectory arc between bodies k, m at timesteps i, j
-planet_visited[k] : binary variable indicating if a planet k has been visited
-Gp : binary variable indicating threshold of planets visited
-
 """
 
 from gtoc13 import DAY, SPTU
@@ -34,6 +18,19 @@ from math import factorial
 
 @timer
 def initialize_model(index_params: IndexParams, discrete_data: DiscreteDict) -> pyo.ConcreteModel:
+    """
+    Creates indices from the inputs for variables and constraints in the problem.
+    Includes constant parameters to generate the matrix for the model.
+
+    Inputs to the problem dictate the dimensionality of the generated model.
+
+    k : k-th index for body
+    t, i, j : t-th timestep index, with i and j as dummy indices for t. This is NOT the actual timestep!
+    h : h-th position in the sequence
+
+    Cartesian products of these indices are used for variable and constraint construction.
+
+    """
     bodies = discrete_data.bodies
     print(">>>>> INSTANTIATE PYOMO CONCRETE MODEL >>>>>\n")
     seq_model = pyo.ConcreteModel()  # ConcreteModel instantiates during construction
@@ -74,11 +71,15 @@ def initialize_model(index_params: IndexParams, discrete_data: DiscreteDict) -> 
 @timer
 def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     """
-    Description:
+    x[k,t,h] : primary binary variable to select body k at timestep t for position h
 
-    Inputs:
-    -------
-
+    Constraints imposed:
+    - no more than one selection per position h
+    - no more than one state being selected per body k
+    - must select up to the target sequence length
+    - only score up to the flyby limit per k
+    - time must be monotonically increasing per h
+    - do not repeat bodies between h and h+1
 
     """
     print("...create x_kth binary variable...")
@@ -131,15 +132,29 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     seq_model.monotonic_time = pyo.Constraint(seq_model.H, rule=monotime_rule)
 
+    print("...create x_k*h packing constraint...")
+    # do not pick the same body k for sequential h positions
+
+    def nodupes_rule(model, k, h):
+        if h > 1:
+            term = pyo.quicksum(model.x_kth[k, :, h]) + pyo.quicksum(model.x_kth[k, :, h - 1]) <= 1
+
+        else:
+            term = pyo.Constraint.Skip
+        return term
+
+    seq_model.no_dupes = pyo.Constraint(seq_model.K * seq_model.H, rule=nodupes_rule)
+
 
 @timer
 def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
     """
-    Description:
+    y[k,i,j] : binary variable for body k flyby at timestep i with a previous flyby at timestep j
 
-    Inputs:
-    -------
-
+    Constraints imposed:
+    - total number of previous flybys possible cannot be greater than (nk_lim-1)!
+    - if x_kt* is selected for k at t = i,j then y_kij can be toggled
+    - if x_kt* is not selected for k at both t = i,j, then y_kij cannot be toggled
 
     """
     # y variables and constraints
@@ -148,7 +163,7 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
     seq_model.y_kij = pyo.Var(seq_model.KIJ, within=pyo.Binary)
 
     print("...create y_k** packing constraints...")
-    # the amount of total previous flybys cannot be greater than h_tot - 1
+    # the amount of total previous flybys cannot be greater than (Nk_lim - 1)!
     seq_model.y_k_packing = pyo.Constraint(
         seq_model.K,
         rule=lambda model, k: pyo.quicksum(model.y_kij[k, ...])
@@ -177,11 +192,13 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
 @timer
 def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
     """
-    Description:
+    z[k,t] : binary variable indicating the FIRST body k flyby at timestep t
 
-    Inputs:
-    -------
-
+    Constraints imposed:
+    - only one FIRST flyby per k, if there are flybys
+    - if x_kt* is selected for k at t, then z_kt may be toggled
+    - if x_kt** is selected for k, then there must be one first flyby z_k*
+    - z_kt cannot be a first flyby if y_ki* for i = t indicates there are previous flybys
 
     """
     print("...create z_kt indicator variable of first flyby at t for body k...")
@@ -195,7 +212,6 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
     )
 
     print("...create z_k* and z_kt implication constraints...")
-
     # if there is a flyby at that time, then (k, t) can be a first flyby
     seq_model.z_implies_x = pyo.Constraint(
         seq_model.KT,
@@ -220,6 +236,17 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
 @timer
 def grand_tour_vars_and_constrs(seq_model: pyo.ConcreteModel):
+    """
+    planet_visited[k] : binary variable indicating if a planet k has been visited
+    Gp : binary variable indicating threshold of planets visited
+
+    Constraints imposed:
+    - if any x_k** for k is selected, toggle planet_visited[k]
+    - do not allow planet_visited[k] to be toggled if x_k** is not active
+    - if the sum of planet_visited is at least the target value, toggle the grand tour bonus
+    - do not allow the grand tour bonus to be toggled unless the sum of planet_visited is over the threshold
+
+    """
     print("...create grand tour bonus indicator variables Zp, Gp, Zc, Gc, and big-M constraints...")
     seq_model.planet_visited = pyo.Var(seq_model.K, within=pyo.Binary)  # planets and yandi
     seq_model.all_planets = pyo.Var(initialize=0, within=pyo.Binary)  # all planets indicator
@@ -244,6 +271,14 @@ def grand_tour_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
 @timer
 def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: dict):
+    """
+    L[k,i,m,j] : binary variable indicating a trajectory arc between bodies k, m at timesteps i, j
+
+    :param seq_model: Description
+    :type seq_model: pyo.ConcreteModel
+    :param dv_table: Description
+    :type dv_table: dict
+    """
     # Delta-vs and tofs
     seq_model.tof_kimj = pyo.Param(
         seq_model.KIMJ, initialize=lambda model, k, i, m, j: dv_table[k, i, m, j]["tof"]
@@ -343,7 +378,7 @@ def objective_fnc(seq_model: pyo.ConcreteModel):
 
 @timer
 def first_arcs_constrs(
-    seq_model: pyo.ConcreteModel, body_list: list[int | tuple[int, tuple[int, int]]]
+    seq_model: pyo.ConcreteModel, body_list: list[int | tuple[int, tuple[int, int]] | None]
 ):
     for h, body in enumerate(body_list):
         if isinstance(body, tuple):
@@ -353,5 +388,7 @@ def first_arcs_constrs(
                 )
                 == 1
             )
+        elif body is None:
+            continue
         else:
             seq_model.first_arcs.add(pyo.quicksum(seq_model.x_kth[body, :, h + 1]) == 1)
