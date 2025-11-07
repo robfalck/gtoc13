@@ -194,7 +194,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
                     targets=['v'], lower=-100, upper=100)
 
     # Control: sail normal unit vector (ballistic = zero for Keplerian orbit)
-    phase.add_control('u_n', units='unitless', shape=(N, 3), opt=True,
+    phase.add_control('u_n', units='unitless', shape=(N, 3), opt=False,
                         val=np.ones((N, 3)), targets=['u_n'])
     if phase.control_options['u_n']['opt']:
         phase.add_path_constraint('u_n_norm', equals=1.0)
@@ -212,12 +212,13 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.add_timeseries_output('a_sail', units='km/s**2')
     phase.add_timeseries_output('u_n_norm', units='unitless')
 
-    prob.model.add_design_var('dt', lower=0.0, upper=50) 
+    prob.model.add_design_var('dt', lower=0.0, upper=200, units='gtoc_year') 
     prob.model.add_design_var('y0', units='DU')
     prob.model.add_design_var('z0', units='DU')
     prob.model.add_design_var('v_end', units='DU/TU')
     prob.model.add_constraint('flyby_comp.v_inf_mag_defect', equals=0.0, units='DU/TU')
     prob.model.add_constraint('flyby_comp.h_p_defect', upper=0.0, ref=1000.0)
+    prob.model.add_constraint('times', indices=[-1], upper=199.999, units='gtoc_year')
     # prob.model.add_design_var('vx0', lower=0.0, units='DU/TU')
     # prob.model.add_design_var('v_final', units='DU/TU')
     phase.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
@@ -297,4 +298,4 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
 
 
 if __name__ == '__main__':
-    solve(bodies=[7], dt=[20.0], t0=0.0, num_nodes=30)
+    solve(bodies=[10], dt=[20.0], t0=0.0, num_nodes=20)
