@@ -65,6 +65,19 @@ from .bodies import (
     bodies_data
 )
 
+import openmdao.utils.units as om_units
+import numpy as np
+
+# Add our specific DU and TU to OpenMDAO's recognized units.
+om_units.add_unit('DU', f'{KMPDU}*1000*m')
+period = 2 * np.pi * np.sqrt(KMPDU**3 / MU_ALTAIRA)
+om_units.add_unit('TU', f'{period}*s')
+
+# Add GTOC13's year definition (365.25 days * 86400 s/day = 31557600 s)
+# This differs from OpenMDAO's default 'year' which uses 31556925.99 s
+from gtoc13.constants import YEAR as GTOC_YEAR
+om_units.add_unit('gtoc_year', f'{GTOC_YEAR}*s')
+
 # Alias for compatibility with existing code
 AU = KMPAU
 

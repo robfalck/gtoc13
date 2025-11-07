@@ -28,7 +28,8 @@ def solar_sail_acceleration(r: jnp.ndarray, u_n: jnp.ndarray, r0: float) -> jnp.
     cos_alpha = jnp.clip(cos_alpha, -1.0, 1.0)
     
     # Acceleration magnitude
-    coeff = -2.0 * C_FLUX * SAIL_AREA / SPACECRAFT_MASS
+    coeff = -2.0 * C_FLUX * SAIL_AREA / SPACECRAFT_MASS # N / kg = kg * m / s**2 /kg = m/s**2
+    coeff = coeff / 1000.0  # km/s**2
     a_mag = coeff * (r0 / r_mag)**2 * cos_alpha**2
     
     return a_mag * u_n, cos_alpha

@@ -6,7 +6,7 @@ import openmdao.utils.units as om_units
 import dymos as dm
 
 from gtoc13 import bodies_data, GTOC13Solution, PropagatedArc, FlybyArc, ConicArc
-from gtoc13.constants import MU_ALTAIRA, KMPAU
+from gtoc13.constants import MU_ALTAIRA, KMPDU, SPTU, R0
 
 from gtoc13.dymos_solver.ephem_comp import EphemComp
 from gtoc13.dymos_solver.v_concat_comp import VConcatComp
@@ -17,10 +17,112 @@ from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
 from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
 
 
-# Add our specific DU and TU to OpenMDAO's recognized units.
-om_units.add_unit('DU', f'{KMPAU}*1000*m')
-period = 2 * np.pi * np.sqrt(KMPAU**3 / MU_ALTAIRA)
-om_units.add_unit('TU', f'{period}*s')
+def create_solution(prob, bodies):
+    N = len(bodies)
+    
+    flyby_comp = prob.model.flyby_comp
+    traj = prob.model.traj
+    phase = traj.phases.all_arcs
+    sim_prob = traj.sim_prob
+
+    # sol, controls = sim_prob.model.traj.phases.all_arcs.integrator.solve_ivp(method='RK45', dense_output=False, atol=1.0E-12, rtol=1.0E-12)
+
+    # r_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.r', units='km')
+    # v_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.v', units='km/s')
+    # u_n_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.u_n', units='unitless')
+    # u_n_norm_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.u_n_norm', units='unitless')
+    # dt_dtau_s_sim = traj.sim_prob.get_val('traj.all_arcs.parameter_vals:dt_dtau', units='s')
+    # tau_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.tau', units='unitless')
+
+    # r_sim = sol.y.T[:, :3] * KMPDU
+    # v_sim = sol.y.T[:, -3:] * KMPDU / SPTU
+
+    # print(controls)
+    # exit(0)
+    
+    t0_s = prob.get_val('t0', units='s')
+
+    r = prob.get_val('traj.all_arcs.timeseries.r', units='km')
+    v = prob.get_val('traj.all_arcs.timeseries.v', units='km/s')
+    u_n = prob.get_val('traj.all_arcs.timeseries.u_n', units='unitless')
+    u_n_norm = prob.get_val('traj.all_arcs.timeseries.u_n_norm', units='unitless')
+    dt_dtau_s = prob.get_val('traj.all_arcs.parameter_vals:dt_dtau', units='s')
+    tau = phase.get_val('timeseries.tau', units='unitless')
+
+    # print('Simulation position error at tf')
+    # print(r[-1, :, ...])
+    # print(r_sim[-1, :, ...])
+    # print(r_sim[-1, :, ...] - r[-1, :, ...])
+
+    # print('Simulation velocity error at tf')
+    # print(v[-1, :, ...])
+    # print(v_sim[-1, :, ...])
+    # print(v_sim[-1, :, ...] - v[-1, :, ...])
+
+    # # Get times in seconds using GTOC13's gtoc_year unit definition
+    # times = prob.get_val('times', units='s')
+    flyby_v_in = flyby_comp.get_val('v_in', units='km/s')
+    flyby_v_out = flyby_comp.get_val('v_out', units='km/s')
+    flyby_v_inf_in = flyby_comp.get_val('v_inf_in', units='km/s')
+    flyby_v_inf_out = flyby_comp.get_val('v_inf_out', units='km/s')
+
+    # event_pos = prob.get_val('event_pos', units='km')
+
+    arcs = []
+    for i in range(N):
+        # Use the simulation outputs to write the arc
+        t_i = t0_s + dt_dtau_s[i] * (tau + 1.0)
+        r_i = r[:, i, :]
+        v_i = v[:, i, :]
+        u_n_i = u_n[:, i, :]
+
+        print('t_i')
+        print(t_i)
+        print('r_i')
+        print(r_i)
+        print('v_i')
+        print(v_i)
+        print('u_n_i')
+
+        # Add the i-th propagated arc 
+        arcs.append(PropagatedArc.create(epochs=t_i, positions=r_i,
+                                         velocities=v_i, controls=u_n_i))
+        
+        # Add the i-th flyby arc
+        t_flyby_i = prob.get_val('times', units='s')[i + 1]        
+
+        # For now assume we never repeat a body more than 12 times, so 
+        # each flyby is for science.
+        arcs.append(FlybyArc.create(body_id=bodies[i],
+                                    epoch=t_flyby_i,
+                                    position=r_i[-1, ...],
+                                    velocity_in=flyby_v_in[i],
+                                    velocity_out=flyby_v_out[i],
+                                    v_inf_in=flyby_v_inf_in[i],
+                                    v_inf_out=flyby_v_inf_out[i],
+                                    is_science=True))
+    
+    solution = GTOC13Solution(arcs=arcs,
+                              comments=[])
+
+    # Find the next available solution filename
+    from pathlib import Path
+    solutions_dir = Path(__file__).parent.parent.parent / 'solutions'
+    solutions_dir.mkdir(exist_ok=True)
+
+    index = 1
+    while (solutions_dir / f'dymos_solution_{index}.txt').exists():
+        index += 1
+
+    solution_file = solutions_dir / f'dymos_solution_{index}.txt'
+    solution.write_to_file(solution_file, precision=11)
+    print(f"Solution written to {solution_file}")
+
+    # Create plot and save it
+    plot_file = solutions_dir / f'dymos_solution_{index}.png'
+    solution.plot(show_bodies=True, save_path=plot_file)
+
+    return solution
 
 
 def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> GTOC13Solution:
@@ -57,7 +159,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     # tx = dm.PicardShooting(num_segments=1, nodes_per_seg=num_nodes, solve_segments='forward')
 
     phase = dm.Phase(ode_class=SolarSailODEComp,
-                     ode_init_kwargs={'N': N, 'r0': 1.0},
+                     ode_init_kwargs={'N': N, 'r0': R0},
                      transcription=tx)
 
     traj = dm.Trajectory()
@@ -99,7 +201,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
         phase.add_path_constraint('cos_alpha', lower=0.0)
 
     # Time conversion factor
-    phase.add_parameter('dt_dtau', units='year', val=30/2.0, opt=False,
+    phase.add_parameter('dt_dtau', units='gtoc_year', val=30/2.0, opt=False,
                         targets=['dt_dtau'], static_target=False, shape=(N,))
 
     # Set time bounds
@@ -110,7 +212,7 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.add_timeseries_output('a_sail', units='km/s**2')
     phase.add_timeseries_output('u_n_norm', units='unitless')
 
-    prob.model.add_design_var('dt', lower=0.0, upper=20) 
+    prob.model.add_design_var('dt', lower=0.0, upper=50) 
     prob.model.add_design_var('y0', units='DU')
     prob.model.add_design_var('z0', units='DU')
     prob.model.add_design_var('v_end', units='DU/TU')
@@ -127,25 +229,34 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     prob.driver.opt_settings['print_level'] = 5
     prob.driver.opt_settings['tol'] = 1.0E-6
 
+    # Acceptable (feasible but suboptimal) tolerance
+    prob.driver.opt_settings['acceptable_tol'] = 1.0  # Large value means we don't care about optimality
+    prob.driver.opt_settings['acceptable_constr_viol_tol'] = 1.0E-6  # Must satisfy constraints
+    prob.driver.opt_settings['acceptable_dual_inf_tol'] = 1.0E10  # Don't care about dual infeasibility
+    prob.driver.opt_settings['acceptable_compl_inf_tol'] = 1.0E10  # Don't care about complementarity
+    # Number of iterations at acceptable level before terminating
+    prob.driver.opt_settings['acceptable_iter'] = 5  # Accept after 5 consecutive "acceptable" iterations
+
     # prob.driver.opt_settings['mu_init'] = 1e-3
     # p.driver.opt_settings['max_iter'] = 500
-    # p.driver.opt_settings['acceptable_tol'] = 1e-3
-    # p.driver.opt_settings['constr_viol_tol'] = 1e-3
-    # p.driver.opt_settings['compl_inf_tol'] = 1e-3
+    # Commented out loose acceptable tolerances - they allow too much constraint violation
+    # prob.driver.opt_settings['acceptable_tol'] = 1e-3
+    # prob.driver.opt_settings['constr_viol_tol'] = 1e-3
+    # prob.driver.opt_settings['compl_inf_tol'] = 1e-3
     # p.driver.opt_settings['acceptable_iter'] = 0
     # p.driver.opt_settings['tol'] = 1e-3
     # p.driver.opt_settings['print_level'] = 0
     prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'  # for faster convergence
     prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
     # prob.driver.opt_settings['mu_strategy'] = 'monotone'
-    prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
+    # prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
 
     phase.set_simulate_options(times_per_seg=50, atol=1.0E-12, rtol=1.0E-12)
 
     prob.setup()
 
-    prob.set_val('t0', t0, units='year')
-    prob.set_val('dt', dt, units='year')
+    prob.set_val('t0', t0, units='gtoc_year')
+    prob.set_val('dt', dt, units='gtoc_year')
     prob.set_val('v_end', [6.43e+01, -7.38e-03, 1.678e-03], units='km/s')
 
     # Set initial guess - linearly interpolate between initial and final states
@@ -160,90 +271,30 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.set_state_val('v', vals=([v0, v0]), units='km/s')
     phase.set_time_val(initial=-1.0, duration=2.0, units='unitless')
     u_n = np.zeros((N, 3))
-    u_n[:, 0] = 1.0  # Keep u_n as zeros for ballistic trajectory
+    if phase.control_options['u_n']['opt']:
+        u_n[:, 0] = 1.0  # Keep u_n as zeros for ballistic trajectory
     phase.set_control_val('u_n', [u_n, u_n])
-    phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='year')
+    phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='gtoc_year')
 
     # # Run the problem
-    dm.run_problem(prob, run_driver=True, simulate=True, refine_iteration_limit=10)
+    # prob.find_feasible()
+    dm.run_problem(prob, run_driver=True, simulate=False)
 
-    # # prob.run_model()
-    
-    t0_s = prob.get_val('t0', units='s')
 
-    r = prob.get_val('traj.all_arcs.timeseries.r', units='km')
-    v = prob.get_val('traj.all_arcs.timeseries.v', units='km/s')
-    u_n = prob.get_val('traj.all_arcs.timeseries.u_n', units='unitless')
-    u_n_norm = prob.get_val('traj.all_arcs.timeseries.u_n_norm', units='unitless')
-    dt_dtau_s = prob.get_val('traj.all_arcs.parameter_vals:dt_dtau', units='s')
-    tau = phase.get_val('timeseries.tau', units='unitless')
+    times = prob.model.get_val('times', units='s')
+    r = prob.model.get_val('traj.all_arcs.timeseries.r', units='km')
+    planet_pos = bodies_data[bodies[0]].get_state(times[-1]).r
 
-    r_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.r', units='km')
-    v_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.v', units='km/s')
-    u_n_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.u_n', units='unitless')
-    u_n_norm_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.u_n_norm', units='unitless')
-    dt_dtau_s_sim = traj.sim_prob.get_val('traj.all_arcs.parameter_vals:dt_dtau', units='s')
-    tau_sim = traj.sim_prob.get_val('traj.all_arcs.timeseries.tau', units='unitless')
-
-    flyby_comp = prob.model.flyby_comp
-    times = prob.get_val('times', units='s')
-    flyby_v_in = flyby_comp.get_val('v_in', units='km/s')
-    flyby_v_out = flyby_comp.get_val('v_out', units='km/s')
-    flyby_v_inf_in = flyby_comp.get_val('v_inf_in', units='km/s')
-    flyby_v_inf_out = flyby_comp.get_val('v_inf_out', units='km/s')
-
-    event_pos = prob.get_val('event_pos', units='km')
-
-    arcs = []
-    for i in range(N):
-        # Use the simulation outputs to write the arc
-        t_i = t0_s + dt_dtau_s_sim[i] * (tau_sim + 1.0)
-        r_i = r_sim[:, i, :]
-        v_i = v_sim[:, i, :]
-        u_n_i = u_n_sim[:, i, :]
-
-        # Add the i-th propagated arc 
-        arcs.append(PropagatedArc.create(epochs=t_i, positions=r_i,
-                                         velocities=v_i, controls=u_n_i))
-        
-        # Add the i-th flyby arc
-        t_flyby_i = prob.get_val('times', units='s')[i + 1]        
-
-        # For now assume we never repeat a body more than 12 times, so 
-        # each flyby is for science.
-        arcs.append(FlybyArc.create(body_id=bodies[i],
-                                    epoch=t_flyby_i,
-                                    position=event_pos[i+1],
-                                    velocity_in=flyby_v_in[i],
-                                    velocity_out=flyby_v_out[i],
-                                    v_inf_in=flyby_v_inf_in[i],
-                                    v_inf_out=flyby_v_inf_out[i],
-                                    is_science=True))
-    
-    solution = GTOC13Solution(arcs=arcs,
-                              comments=[])
-
-    # Find the next available solution filename
-    from pathlib import Path
-    solutions_dir = Path(__file__).parent.parent.parent / 'solutions'
-    solutions_dir.mkdir(exist_ok=True)
-
-    index = 1
-    while (solutions_dir / f'dymos_solution_{index}.txt').exists():
-        index += 1
-
-    solution_file = solutions_dir / f'dymos_solution_{index}.txt'
-    solution.write_to_file(solution_file, precision=11)
-    print(f"Solution written to {solution_file}")
-
+    print('After solving the propagation ends at')
+    print(r)
     print(times)
-    print(event_pos[1,:])
-    print(bodies_data[10].get_state(times[1]))
+    print(f'Body {bodies[0]} is at')
+    print(planet_pos)
+    print(r[-1, ...] - planet_pos)
 
-    prob.model.ephem.list_vars(print_arrays=True, units=True)
-
+    solution = create_solution(prob, bodies)
     return solution
 
 
 if __name__ == '__main__':
-    solve(bodies=[10], dt=[20.0], t0=0.0, num_nodes=30)
+    solve(bodies=[7], dt=[20.0], t0=0.0, num_nodes=30)
