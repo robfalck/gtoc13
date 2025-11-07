@@ -42,7 +42,7 @@ class TestEpehemComp(unittest.TestCase):
 
         prob.setup()
 
-        prob.set_val('ephem.dt', dt, units='year')
+        prob.set_val('ephem.dt', dt, units='gtoc_year')
 
         prob.run_model()
 

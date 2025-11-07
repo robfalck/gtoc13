@@ -34,15 +34,15 @@ class EphemComp(om.JaxExplicitComponent):
 
     def setup(self):
         N = len(self.options['bodies'])
-        self.add_input('t0', shape=(1,), val=0.0, units='year', desc='Initial time')
-        self.add_input('dt', shape=(N,), units='year', desc='Transfer time for each event.')
+        self.add_input('t0', shape=(1,), val=0.0, units='gtoc_year', desc='Initial time')
+        self.add_input('dt', shape=(N,), units='gtoc_year', desc='Transfer time for each event.')
         self.add_input('y0', shape=(1,), units='DU', desc='Initial y-position')
         self.add_input('z0', shape=(1,), units='DU', desc='Initial z-position')
-        # self.add_input('vx0', shape=(1,), units='DU/year', desc='Initial x-velocity')
+        # self.add_input('vx0', shape=(1,), units='DU/gtoc_year', desc='Initial x-velocity')
         self.add_output('event_pos', shape=(N + 1, 3), units='km', desc='Positions at the starting time and each body intercept.')
         self.add_output('body_vel', shape=(N, 3), units='km/s', desc='Intertial velocity of each body at intercept (km/s)')
-        self.add_output('dt_dtau', shape=(N,), units='year', desc='Time span vs tau for each arc.')
-        self.add_output('times', shape=(N + 1,), units='year', desc='Times of events')
+        self.add_output('dt_dtau', shape=(N,), units='gtoc_year', desc='Time span vs tau for each arc.')
+        self.add_output('times', shape=(N + 1,), units='gtoc_year', desc='Times of events')
 
         self._ELEMENTS = jnp.zeros((N, 6))
 
@@ -90,7 +90,8 @@ class EphemComp(om.JaxExplicitComponent):
         # Convert hashable tuple back to JAX array for computation
         ELEMENTS = jnp.array(self._ELEMENTS)
 
-        times = jnp.concatenate((t0, jnp.cumsum(dt)))
+        # Compute event times: t0, t0+dt[0], t0+dt[0]+dt[1], ...
+        times = jnp.concatenate((t0, t0 + jnp.cumsum(dt)))
 
         # Using MU in km**3/s**2, make sure to pass times in seconds, not years.
         body_pos, body_vel = elements_to_pos_vel(ELEMENTS, YEAR * times[1:], self._MU)
