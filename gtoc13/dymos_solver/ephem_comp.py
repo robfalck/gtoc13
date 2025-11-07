@@ -91,10 +91,17 @@ class EphemComp(om.JaxExplicitComponent):
         ELEMENTS = jnp.array(self._ELEMENTS)
 
         # Compute event times: t0, t0+dt[0], t0+dt[0]+dt[1], ...
+        # Note: times are in gtoc_year units (as specified in the input declaration)
         times = jnp.concatenate((t0, t0 + jnp.cumsum(dt)))
 
+        # Convert times from gtoc_year to seconds for elements_to_pos_vel
+        # Since gtoc_year is defined as YEAR * s, and our inputs have units='gtoc_year',
+        # the values in compute_primal are the numeric values in gtoc_year units.
+        # But elements_to_pos_vel expects seconds, so we multiply by YEAR.
+        times_seconds = YEAR * times[1:]
+
         # Using MU in km**3/s**2, make sure to pass times in seconds, not years.
-        body_pos, body_vel = elements_to_pos_vel(ELEMENTS, YEAR * times[1:], self._MU)
+        body_pos, body_vel = elements_to_pos_vel(ELEMENTS, times_seconds, self._MU)
 
         # Convert initial conditions from DU to km
         # Note: inputs are in DU, outputs must be in km

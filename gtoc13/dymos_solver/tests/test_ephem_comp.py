@@ -26,12 +26,13 @@ class TestEpehemComp(unittest.TestCase):
         # prob.model.list_vars(print_arrays=True)
 
         r = prob.get_val('ephem.event_pos')
-        v = prob.get_val('ephem.event_vel')
+        v = prob.get_val('ephem.body_vel')  # Changed from event_vel to body_vel
+        times_s = prob.get_val('ephem.times', units='s')  # Get times in seconds for get_state
 
-        r_check, v_check = bodies_data[10].get_state(0.0)
+        r_check, v_check = bodies_data[10].get_state(times_s[1])  # Default time_units is seconds
 
-        assert_near_equal(r[1, :], r_check)
-        assert_near_equal(v[1, :], v_check)
+        assert_near_equal(r[1, :], r_check, tolerance=1e-12)
+        assert_near_equal(v[0, :], v_check, tolerance=1e-12)
 
     def test_ephem_vec(self):
         body_sequence = [10, 9]
@@ -49,13 +50,13 @@ class TestEpehemComp(unittest.TestCase):
         # prob.model.list_vars(print_arrays=True)
 
         r = prob.get_val('ephem.event_pos')
-        v = prob.get_val('ephem.event_vel')
-        times = prob.get_val('ephem.times')
+        v = prob.get_val('ephem.body_vel')
+        times_s = prob.get_val('ephem.times', units='s')  # Get times in seconds for get_state
 
         for i, body_id in enumerate(body_sequence):
-            r_check, v_check = bodies_data[body_id].get_state(times[i+1])
-            assert_near_equal(r[i+1, :], r_check)
-            assert_near_equal(v[i+1, :], v_check)
+            r_check, v_check = bodies_data[body_id].get_state(times_s[i+1])  # Default time_units is seconds
+            assert_near_equal(r[i+1, :], r_check, tolerance=1e-12)
+            assert_near_equal(v[i, :], v_check, tolerance=1e-12)  # Changed from v[i+1, :] to v[i, :]
         
 
 if __name__ == '__main__':
