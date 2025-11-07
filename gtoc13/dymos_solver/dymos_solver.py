@@ -125,6 +125,169 @@ def create_solution(prob, bodies):
     return solution
 
 
+def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20) -> om.Problem:
+    """
+    Parameters
+    ----------
+    bodies : Sequence[int]
+        The bodies that make up the solution, in order of visit.
+    num_nodes : int
+        The number of nodes to be used in each trajectory arc.
+
+    Returns
+    -------
+    solution : Solution
+        The GTOC solution instance for the posed problem.
+
+    Raises
+    ------
+    ValueError
+        If dymos is unable to find a solution.
+    """
+    N = len(bodies)
+
+    prob = om.Problem()
+
+    prob.model.add_subsystem('ephem', EphemComp(bodies=bodies), promotes=['*'])
+
+    tx = dm.Birkhoff(num_nodes=num_nodes, grid_type='lgl')
+    # tx = dm.PicardShooting(num_segments=1, nodes_per_seg=num_nodes, solve_segments='forward')
+
+    phase = dm.Phase(ode_class=SolarSailODEComp,
+                     ode_init_kwargs={'N': N, 'r0': R0},
+                     transcription=tx)
+
+    traj = dm.Trajectory()
+    traj.add_phase('all_arcs', phase, promotes_inputs=['parameters:dt_dtau', 'initial_states:*', 'final_states:*'])
+    prob.model.add_subsystem('traj', traj, promotes_inputs=[('parameters:dt_dtau', 'dt_dtau'), 'initial_states:*', 'final_states:*'])
+
+    prob.model.add_subsystem('v_out_comp', VConcatComp(N=N), promotes_inputs=['v_end', 'initial_states:v'], promotes_outputs=['flyby_v_out'])
+    
+    prob.model.set_input_defaults('initial_states:v', units='km/s', val=np.ones((N, 3))) 
+
+    prob.model.connect('event_pos', 'initial_states:r', src_indices=om.slicer[:-1, ...])
+    prob.model.connect('event_pos', 'final_states:r', src_indices=om.slicer[1:, ...])
+
+    prob.model.add_subsystem('flyby_comp', FlybyDefectComp(bodies=bodies),
+                             promotes_inputs=[('v_in', 'final_states:v')])
+    prob.model.connect('flyby_v_out', 'flyby_comp.v_out')
+    prob.model.set_input_defaults('final_states:v', units='km/s', val=np.ones((N, 3)))
+    prob.model.connect('body_vel', 'flyby_comp.v_body')
+
+    prob.model.add_subsystem('energy_comp', EnergyComp(),
+                             promotes_inputs=['v_end', 'r_end'],
+                             promotes_outputs=['E_end'])
+    prob.model.connect('event_pos', 'r_end', src_indices=om.slicer[-1, ...])
+
+
+    phase.add_state('r', rate_source='drdt', units='DU',
+                    shape=(N, 3), fix_initial=True, fix_final=True,
+                    targets=['r'])
+
+    phase.add_state('v', rate_source='dvdt', units='DU/TU',
+                    shape=(N, 3), fix_initial=False, fix_final=False,
+                    targets=['v'], lower=-100, upper=100)
+
+    # Control: sail normal unit vector (ballistic = zero for Keplerian orbit)
+    phase.add_control('u_n', units='unitless', shape=(N, 3), opt=False,
+                        val=np.ones((N, 3)), targets=['u_n'])
+    if phase.control_options['u_n']['opt']:
+        phase.add_path_constraint('u_n_norm', equals=1.0)
+        phase.add_path_constraint('cos_alpha', lower=0.0)
+
+    # Time conversion factor
+    phase.add_parameter('dt_dtau', units='gtoc_year', val=30/2.0, opt=False,
+                        targets=['dt_dtau'], static_target=False, shape=(N,))
+
+    # Set time bounds
+    phase.set_time_options(fix_initial=True, fix_duration=True,
+                           duration_val=2, units='unitless', name='tau')
+    
+    phase.add_timeseries_output('a_grav', units='km/s**2')
+    phase.add_timeseries_output('a_sail', units='km/s**2')
+    phase.add_timeseries_output('u_n_norm', units='unitless')
+
+    # #
+    # # DESIGN VARIABLES
+    # # 
+
+    # # Start time
+    # prob.model.add_design_var('t0', lower=0.0, units='gtoc_year')
+
+    # # Times between flyby events
+    # prob.model.add_design_var('dt', lower=0.0, upper=200, units='gtoc_year') 
+
+    # # Start plane position
+    # prob.model.add_design_var('y0', units='DU')
+    # prob.model.add_design_var('z0', units='DU')
+
+    # # Outgoing inertial velocity after last flyby
+    # prob.model.add_design_var('v_end', units='DU/TU')
+
+    # #
+    # # CONSTRAINTS
+    # #
+
+    # # V-infinity magnitude difference before/after each flyby
+    # prob.model.add_constraint('flyby_comp.v_inf_mag_defect', equals=0.0, units='DU/TU')
+    
+    # # Periapsis Altitude Constraint for Each flyby
+    # # Note that this is a quadratic equation that is negative between the
+    # # allowable flyby normalized altitude values, so it just has to be negative.
+    # # TODO: Test this for massless body flybys
+    # prob.model.add_constraint('flyby_comp.h_p_defect', upper=0.0, ref=1000.0)
+
+    # # Make sure the final time is in the allowable span.
+    # prob.model.add_constraint('times', indices=[-1], upper=199.999, units='gtoc_year')
+
+    # # A constraint on in y and z components of the initial velocity vector
+    # phase.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
+
+    # # TODO: Add a path constraint for perihelion distance.
+
+    # #
+    # # OBJECTIVE
+    # #
+
+    # # Minimize specific orbital energy after the last flyby
+    # # TODO: Convert to problem objective.
+
+    # prob.model.add_objective('E_end')
+
+    prob.driver = om.pyOptSparseDriver(optimizer='IPOPT')
+    prob.driver.declare_coloring()  # Take advantage of sparsity.
+    prob.driver.opt_settings['print_level'] = 5
+    prob.driver.opt_settings['tol'] = 1.0E-6
+
+    # Gradient-based autoscaling
+    prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'
+
+    # Step-size selection
+    prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
+
+    # This following block allows IPOPT to finish if it has a feasible but
+    # not optimal solution for several iterations in a row.
+    # Acceptable (feasible but suboptimal) tolerance
+    prob.driver.opt_settings['acceptable_tol'] = 1.0  # Large value means we don't care about optimality
+    prob.driver.opt_settings['acceptable_constr_viol_tol'] = 1.0E-6  # Must satisfy constraints
+    prob.driver.opt_settings['acceptable_dual_inf_tol'] = 1.0E10  # Don't care about dual infeasibility
+    prob.driver.opt_settings['acceptable_compl_inf_tol'] = 1.0E10  # Don't care about complementarity
+    # Number of iterations at acceptable level before terminating
+    prob.driver.opt_settings['acceptable_iter'] = 5  # Accept after 5 consecutive "acceptable" iterations
+
+    # How to initialize the constraint bounds of the interior point method
+    prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
+
+    # How IPOPT changes its barrier parameter (mu) over time.
+    # This problem seems to work much better with the default 'adaptive'
+    # prob.driver.opt_settings['mu_strategy'] = 'monotone'
+
+    phase.set_simulate_options(times_per_seg=50, atol=1.0E-12, rtol=1.0E-12)
+
+    return prob, phase
+
+
+
 def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> GTOC13Solution:
     """
     Parameters
@@ -212,17 +375,51 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     phase.add_timeseries_output('a_sail', units='km/s**2')
     phase.add_timeseries_output('u_n_norm', units='unitless')
 
+    #
+    # DESIGN VARIABLES
+    # 
+
+    # Start time
+    prob.model.add_design_var('t0', lower=0.0, units='gtoc_year')
+
+    # Times between flyby events
     prob.model.add_design_var('dt', lower=0.0, upper=200, units='gtoc_year') 
+
+    # Start plane position
     prob.model.add_design_var('y0', units='DU')
     prob.model.add_design_var('z0', units='DU')
+
+    # Outgoing inertial velocity after last flyby
     prob.model.add_design_var('v_end', units='DU/TU')
+
+    #
+    # CONSTRAINTS
+    #
+
+    # V-infinity magnitude difference before/after each flyby
     prob.model.add_constraint('flyby_comp.v_inf_mag_defect', equals=0.0, units='DU/TU')
+    
+    # Periapsis Altitude Constraint for Each flyby
+    # Note that this is a quadratic equation that is negative between the
+    # allowable flyby normalized altitude values, so it just has to be negative.
+    # TODO: Test this for massless body flybys
     prob.model.add_constraint('flyby_comp.h_p_defect', upper=0.0, ref=1000.0)
+
+    # Make sure the final time is in the allowable span.
     prob.model.add_constraint('times', indices=[-1], upper=199.999, units='gtoc_year')
-    # prob.model.add_design_var('vx0', lower=0.0, units='DU/TU')
-    # prob.model.add_design_var('v_final', units='DU/TU')
+
+    # A constraint on in y and z components of the initial velocity vector
     phase.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
-    # phase.add_objective('tau', loc='final')
+
+    # TODO: Add a path constraint for perihelion distance.
+
+    #
+    # OBJECTIVE
+    #
+
+    # Minimize specific orbital energy after the last flyby
+    # TODO: Convert to problem objective.
+
     prob.model.add_objective('E_end')
 
     prob.driver = om.pyOptSparseDriver(optimizer='IPOPT')
@@ -230,6 +427,14 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     prob.driver.opt_settings['print_level'] = 5
     prob.driver.opt_settings['tol'] = 1.0E-6
 
+    # Gradient-based autoscaling
+    prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'
+
+    # Step-size selection
+    prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
+
+    # This following block allows IPOPT to finish if it has a feasible but
+    # not optimal solution for several iterations in a row.
     # Acceptable (feasible but suboptimal) tolerance
     prob.driver.opt_settings['acceptable_tol'] = 1.0  # Large value means we don't care about optimality
     prob.driver.opt_settings['acceptable_constr_viol_tol'] = 1.0E-6  # Must satisfy constraints
@@ -238,19 +443,12 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     # Number of iterations at acceptable level before terminating
     prob.driver.opt_settings['acceptable_iter'] = 5  # Accept after 5 consecutive "acceptable" iterations
 
-    # prob.driver.opt_settings['mu_init'] = 1e-3
-    # p.driver.opt_settings['max_iter'] = 500
-    # Commented out loose acceptable tolerances - they allow too much constraint violation
-    # prob.driver.opt_settings['acceptable_tol'] = 1e-3
-    # prob.driver.opt_settings['constr_viol_tol'] = 1e-3
-    # prob.driver.opt_settings['compl_inf_tol'] = 1e-3
-    # p.driver.opt_settings['acceptable_iter'] = 0
-    # p.driver.opt_settings['tol'] = 1e-3
-    # p.driver.opt_settings['print_level'] = 0
-    prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'  # for faster convergence
-    prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
+    # How to initialize the constraint bounds of the interior point method
+    prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
+
+    # How IPOPT changes its barrier parameter (mu) over time.
+    # This problem seems to work much better with the default 'adaptive'
     # prob.driver.opt_settings['mu_strategy'] = 'monotone'
-    # prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
 
     phase.set_simulate_options(times_per_seg=50, atol=1.0E-12, rtol=1.0E-12)
 
@@ -286,12 +484,12 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     r = prob.model.get_val('traj.all_arcs.timeseries.r', units='km')
     planet_pos = bodies_data[bodies[0]].get_state(times[-1]).r
 
-    print('After solving the propagation ends at')
-    print(r)
-    print(times)
-    print(f'Body {bodies[0]} is at')
-    print(planet_pos)
-    print(r[-1, ...] - planet_pos)
+    # print('After solving the propagation ends at')
+    # print(r)
+    # print(times)
+    # print(f'Body {bodies[0]} is at')
+    # print(planet_pos)
+    # print(r[-1, ...] - planet_pos)
 
     solution = create_solution(prob, bodies)
     return solution

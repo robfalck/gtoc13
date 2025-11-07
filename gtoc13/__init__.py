@@ -65,6 +65,10 @@ from .bodies import (
     bodies_data
 )
 
+from .mission_plan import (
+    MissionPlan
+)
+
 import openmdao.utils.units as om_units
 import numpy as np
 
@@ -118,6 +122,7 @@ __all__ = [
     "ConicArc",
     "PropagatedArc",
     "GTOC13Solution",
+    "MissionPlan",
 
     # Lambert solver
     "lambert",
