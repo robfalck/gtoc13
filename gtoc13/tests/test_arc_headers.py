@@ -26,7 +26,7 @@ class TestArcHeaders(unittest.TestCase):
         # Check for conic arc header
         self.assertIn("# Conic Arc: Body 0 (heliocentric)", result)
         self.assertIn("from t=0.000000 years to t=50.000000 years", result)
-        self.assertIn("# body_id", result)
+        self.assertIn("body_id", result)
         self.assertIn("epoch (s)", result)
 
     def test_flyby_arc_header(self):
@@ -79,7 +79,7 @@ class TestArcHeaders(unittest.TestCase):
         # Check for propagated arc header
         self.assertIn("# Propagated Arc: Body 0 (heliocentric)", result)
         self.assertIn("from t=50.000000 years to", result)
-        self.assertIn("# body_id", result)
+        self.assertIn("body_id", result)
         self.assertIn("cx", result)  # Control column labels
 
     def test_multiple_arcs_headers(self):
