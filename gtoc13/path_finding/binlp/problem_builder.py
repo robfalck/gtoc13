@@ -11,7 +11,7 @@ and run `conda install scip`.
 """
 
 from gtoc13 import DAY, SPTU
-from binlp_utils import timer, IndexParams, DiscreteDict, lin_dots_penalty
+from b_utils import timer, IndexParams, DiscreteDict, lin_dots_penalty
 import pyomo.environ as pyo
 from math import factorial
 
@@ -89,7 +89,7 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     print("...create x parition constraint...")
     # x partition constraint: selection of bodies must equal to h_tot
     seq_model.x_partition = pyo.Constraint(
-        rule=pyo.summation(seq_model.x_kth) == seq_model.H.at(-1)
+        rule=pyo.summation(seq_model.x_kth) <= seq_model.H.at(-1)
     )
 
     print("...create x_kt* packing constraints...")
@@ -102,7 +102,7 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     # for each h, there must only be one body at some time
     seq_model.x_h_packing = pyo.Constraint(
         seq_model.H,
-        rule=lambda model, h: pyo.quicksum(model.x_kth[..., h]) == 1,
+        rule=lambda model, h: pyo.quicksum(model.x_kth[..., h]) <= 1,
     )
 
     print("...create x_k** max number of scientific flybys...")

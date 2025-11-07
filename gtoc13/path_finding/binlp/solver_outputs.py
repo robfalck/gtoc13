@@ -1,6 +1,6 @@
 from pyomo.opt import TerminationCondition, SolverFactory, SolverResults
 import pyomo.environ as pyo
-from binlp_utils import SolverParams, SequenceTarget, timer
+from gtoc13.path_finding.binlp.b_utils import SolverParams, SequenceTarget, timer
 from pathlib import Path
 from typing import Any
 from numpy import round

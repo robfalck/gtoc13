@@ -11,7 +11,7 @@ solution sequences based on number of iterations.
 import pyomo.environ as pyo
 import logging
 from gtoc13 import bodies_data
-from binlp_utils import Timer, create_discrete_dataset, IndexParams, SolverParams
+from b_utils import Timer, create_discrete_dataset, IndexParams, SolverParams
 from problem_builder import (
     initialize_model,
     x_vars_and_constrs,
@@ -25,7 +25,7 @@ from solver_outputs import generate_solutions
 
 ############### EDIT CONFIG ###############
 debug = False
-input_dict = dict(Yo=0, Yf=10, perYear=1, bodies_data=bodies_data)
+input_dict = dict(Yo=1, Yf=15, perYear=1, bodies_data=bodies_data)
 discrete_data, k_body, num = create_discrete_dataset(**input_dict)
 # prob_dict = dict(gt_smalls=13, dv_limit=2000)
 pidxs_params = IndexParams(
@@ -33,7 +33,7 @@ pidxs_params = IndexParams(
     n_timesteps=num,
     seq_length=6,
     flyby_limit=3,
-    gt_planets=5,
+    gt_planets=7,
     first_arcs=[(10, (1, 3)), 9, 8],
 )
 solv_params = SolverParams(
