@@ -208,3 +208,5 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+gtoc13/path_finding/binlp/sequence*.nl
+gtoc13/path_finding/binlp/solverlog*.txt
