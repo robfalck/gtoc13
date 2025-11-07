@@ -20,7 +20,7 @@ import numpy as np
 
 from gtoc13.constants import YEAR
 from gtoc13.mission_plan import MissionPlan
-from gtoc13.dymos_solver.dymos_solver import solve
+from gtoc13.dymos_solver.dymos_solver import solve, create_solution
 
 
 def main():
@@ -79,6 +79,13 @@ Examples:
         help='Number of collocation nodes per arc (default: 20)'
     )
 
+    # Solver options
+    parser.add_argument(
+        '--no-opt',
+        action='store_true',
+        help='If given, just run through the model once without optimization.'
+    )
+
     args = parser.parse_args()
 
     # Load or create mission plan
@@ -109,8 +116,8 @@ Examples:
         print(f"Creating mission plan from command-line arguments")
         plan = MissionPlan(
             bodies=args.bodies,
-            flyby_times=YEAR * np.array(args.flyby_times),
-            t0=YEAR * args.t0
+            flyby_times=args.flyby_times,
+            t0=args.t0
         )
 
     # Display mission plan
@@ -132,7 +139,7 @@ Examples:
     print("Starting trajectory optimization...")
     try:
         prob = plan.solve(
-            num_nodes=args.num_nodes
+            num_nodes=args.num_nodes, run_driver=not args.no_opt
         )
         print("\nOptimization completed successfully!")
 
@@ -168,6 +175,11 @@ Examples:
         # Display final energy
         E_end = prob.get_val('E_end')[0]
         print(f"\nFinal specific orbital energy: {E_end:.6f} km^2/s^2")
+
+        # Create solution file and plot
+        print("\nCreating solution file...")
+        solution = create_solution(prob, plan.bodies)
+        print("Solution file and plot created successfully.")
 
     except Exception as e:
         print(f"\nError during optimization: {e}", file=sys.stderr)

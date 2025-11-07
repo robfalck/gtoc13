@@ -39,8 +39,9 @@ def create_solution(prob, bodies):
 
     # print(controls)
     # exit(0)
-    
-    t0_s = prob.get_val('t0', units='s')
+
+    t0_s = prob.get_val('t0', units='s')[0] 
+    times = prob.get_val('times', units='s')
 
     r = prob.get_val('traj.all_arcs.timeseries.r', units='km')
     v = prob.get_val('traj.all_arcs.timeseries.v', units='km/s')
@@ -71,7 +72,8 @@ def create_solution(prob, bodies):
     arcs = []
     for i in range(N):
         # Use the simulation outputs to write the arc
-        t_i = t0_s + dt_dtau_s[i] * (tau + 1.0)
+        # dt_dtau_s has shape (1, N) so we need to extract the i-th element correctly
+        t_i = times[i] + dt_dtau_s[0, i] * (tau + 1.0).flatten()
         r_i = r[:, i, :]
         v_i = v[:, i, :]
         u_n_i = u_n[:, i, :]

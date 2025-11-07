@@ -441,7 +441,7 @@ class MissionPlan(BaseModel):
         # Remove entries that are explicitly set to None
         return {k: v for k, v in defaults.items() if v is not None}
 
-    def solve(self, num_nodes=20):
+    def solve(self, num_nodes=20, run_driver=True):
         """
         Solve the trajectory optimization problem defined by this mission plan.
 
@@ -449,6 +449,9 @@ class MissionPlan(BaseModel):
         ----------
         num_nodes : int
             Number of collocation nodes per arc (default: 20)
+        run_driver : int
+            If True, run the optimization driver. Otherwise just propagate inputs
+            through the model.
 
         Returns
         -------
@@ -606,8 +609,8 @@ class MissionPlan(BaseModel):
         # Set parameter values (dt_dtau = dt/2)
         phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='gtoc_year')
 
-        dm.run_problem(prob, run_driver=True, simulate=False)
+        dm.run_problem(prob, run_driver=run_driver, simulate=False)
 
-        prob.model.list_vars(print_arrays=True)
+        prob.model.list_vars(print_arrays=True, units=True)
 
         return prob
