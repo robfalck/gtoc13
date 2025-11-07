@@ -3,6 +3,8 @@ Orbital elements representation for celestial bodies.
 """
 from typing import NamedTuple
 
+import jax.numpy as jnp
+
 
 class OrbitalElements(NamedTuple):
     """
@@ -30,3 +32,6 @@ class OrbitalElements(NamedTuple):
     Omega: float  # longitude of ascending node (rad)
     omega: float  # argument of periapsis (rad)
     M0: float  # mean anomaly at epoch (rad)
+
+    def to_array(self):
+        return jnp.array([self.a, self.e, self.i, self.Omega, self.omega, self.M0])

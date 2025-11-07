@@ -1,3 +1,7 @@
+# Configure JAX to use double precision (64-bit floats) throughout the package
+import jax
+jax.config.update("jax_enable_x64", True)
+
 from .orbital_elements import OrbitalElements
 from .cartesian_state import CartesianState
 
@@ -42,11 +46,6 @@ from .solution import (
     ConicArc,
     PropagatedArc,
     GTOC13Solution,
-
-    # Convenience functions
-    create_flyby,
-    create_conic,
-    create_propagated,
 )
 
 from .lambert import (
@@ -65,6 +64,19 @@ from .bodies import (
     load_bodies_data,
     bodies_data
 )
+
+import openmdao.utils.units as om_units
+import numpy as np
+
+# Add our specific DU and TU to OpenMDAO's recognized units.
+om_units.add_unit('DU', f'{KMPDU}*1000*m')
+period = 2 * np.pi * np.sqrt(KMPDU**3 / MU_ALTAIRA)
+om_units.add_unit('TU', f'{period}*s')
+
+# Add GTOC13's year definition (365.25 days * 86400 s/day = 31557600 s)
+# This differs from OpenMDAO's default 'year' which uses 31556925.99 s
+from gtoc13.constants import YEAR as GTOC_YEAR
+om_units.add_unit('gtoc_year', f'{GTOC_YEAR}*s')
 
 # Alias for compatibility with existing code
 AU = KMPAU
@@ -106,11 +118,6 @@ __all__ = [
     "ConicArc",
     "PropagatedArc",
     "GTOC13Solution",
-
-    # Convenience functions
-    "create_flyby",
-    "create_conic",
-    "create_propagated",
 
     # Lambert solver
     "lambert",

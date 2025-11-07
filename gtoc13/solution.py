@@ -3,9 +3,16 @@ GTOC13 Solution representation using Pydantic models.
 Based on the GTOC13 Solution File Format Specification.
 """
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import List, Literal, Tuple
+from typing import List, Literal, Tuple, TextIO
+import sys
 import numpy as np
 from pathlib import Path
+
+from scipy.interpolate import BarycentricInterpolator
+from scipy.integrate import solve_ivp
+
+from gtoc13.constants import MU_ALTAIRA, R0, KMPDU
+from gtoc13.odes import solar_sail_ode, solar_sail_acceleration
 
 
 class StatePoint(BaseModel):
@@ -98,6 +105,44 @@ class FlybyArc(BaseModel):
             )
         ]
 
+    @staticmethod
+    def create(
+        body_id: int,
+        epoch: float,
+        position: Tuple[float, float, float],
+        velocity_in: Tuple[float, float, float],
+        velocity_out: Tuple[float, float, float],
+        v_inf_in: Tuple[float, float, float],
+        v_inf_out: Tuple[float, float, float],
+        is_science: bool = True
+    ) -> 'FlybyArc':
+        """
+        Create a flyby arc.
+
+        Args:
+            body_id: Body identifier (must be > 0)
+            epoch: Time of flyby (seconds)
+            position: Spacecraft position at flyby (km)
+            velocity_in: Incoming heliocentric velocity (km/s)
+            velocity_out: Outgoing heliocentric velocity (km/s)
+            v_inf_in: Incoming v_infinity vector (km/s)
+            v_inf_out: Outgoing v_infinity vector (km/s)
+            is_science: Whether this flyby counts for science scoring (default: True)
+
+        Returns:
+            FlybyArc object
+        """
+        return FlybyArc(
+            body_id=body_id,
+            is_science=is_science,
+            epoch=epoch,
+            position=position,
+            velocity_in=velocity_in,
+            velocity_out=velocity_out,
+            v_inf_in=v_inf_in,
+            v_inf_out=v_inf_out
+        )
+
 
 class ConicArc(BaseModel):
     """
@@ -138,6 +183,38 @@ class ConicArc(BaseModel):
             )
         ]
 
+    @staticmethod
+    def create(
+        epoch_start: float,
+        epoch_end: float,
+        position_start: Tuple[float, float, float],
+        position_end: Tuple[float, float, float],
+        velocity_start: Tuple[float, float, float],
+        velocity_end: Tuple[float, float, float]
+    ) -> 'ConicArc':
+        """
+        Create a conic arc (ballistic coast).
+
+        Args:
+            epoch_start: Start time (seconds)
+            epoch_end: End time (seconds)
+            position_start: Start position (km)
+            position_end: End position (km)
+            velocity_start: Start velocity (km/s)
+            velocity_end: End velocity (km/s)
+
+        Returns:
+            ConicArc object
+        """
+        return ConicArc(
+            epoch_start=epoch_start,
+            epoch_end=epoch_end,
+            position_start=position_start,
+            position_end=position_end,
+            velocity_start=velocity_start,
+            velocity_end=velocity_end
+        )
+
 
 class PropagatedArc(BaseModel):
     """
@@ -174,6 +251,113 @@ class PropagatedArc(BaseModel):
         """Return the list of state points"""
         return self.state_points
 
+    @staticmethod
+    def create(
+        epochs: List[float],
+        positions: List[Tuple[float, float, float]],
+        velocities: List[Tuple[float, float, float]],
+        controls: List[Tuple[float, float, float]]
+    ) -> 'PropagatedArc':
+        """
+        Create a propagated arc from lists of epochs, positions, velocities, and controls.
+
+        To provide an accurate simulated solution, provide each of these items at points that
+        correspond to LGL or CGL nodes in a polynomial.
+
+        Args:
+            epochs: List of time points (seconds)
+            positions: List of position vectors (km)
+            velocities: List of velocity vectors (km/s)
+            controls: List of control vectors (sail normal unit vectors)
+
+        Returns:
+            PropagatedArc object
+
+        Raises:
+            ValueError: If lists have different lengths
+        """
+        if not (len(epochs) == len(positions) == len(velocities) == len(controls)):
+            raise ValueError("All lists must have the same length")
+
+        state_points = [
+            StatePoint(
+                body_id=0,
+                flag=1,
+                epoch=epoch,
+                position=pos,
+                velocity=vel,
+                control=ctrl
+            )
+            for epoch, pos, vel, ctrl in zip(epochs, positions, velocities, controls)
+        ]
+
+        # t, r, v, u = PropagatedArc.simulate(epochs, positions, velocities, controls)
+
+        # state_points = [
+        #     StatePoint(
+        #         body_id=0,
+        #         flag=1,
+        #         epoch=epoch,
+        #         position=pos,
+        #         velocity=vel,
+        #         control=ctrl
+        #     )
+        #     for epoch, pos, vel, ctrl in zip(t, r, v, u)
+        # ]
+
+        return PropagatedArc(state_points=state_points)
+
+    @staticmethod
+    def simulate(epochs, positions, velocities, controls):
+
+        # Convert to numpy arrays
+        epochs = np.array(epochs)
+        positions = np.array(positions)
+        velocities = np.array(velocities)
+        controls = np.array(controls)
+
+        # Map epochs onto [-1, 1]
+        t0 = epochs[0]
+        tf = epochs[-1]
+        tau = 2.0 * (epochs - t0) / (tf - t0) - 1.0
+
+        # Create separate interpolators for each control component
+        # BarycentricInterpolator works on 1D data, so we need one per component
+        # Ensure we're using flattened 1D arrays
+        interp_u0 = BarycentricInterpolator(epochs.flatten(), controls[:, 0].flatten())
+        interp_u1 = BarycentricInterpolator(epochs.flatten(), controls[:, 1].flatten())
+        interp_u2 = BarycentricInterpolator(epochs.flatten(), controls[:, 2].flatten())
+  
+        def _sim_ode(t, y):
+            r = y[:3]
+            v = y[-3:]
+            u_n = np.hstack([interp_u0(t), interp_u1(t), interp_u2(t)])
+
+            r_mag = np.linalg.norm(r)
+            
+            a_grav = -MU_ALTAIRA * r / r_mag**3    
+            a_sail, cos_alpha = solar_sail_acceleration(r, u_n, 1.0)
+            a_total = a_grav #+ a_sail
+
+            ydot = np.concatenate([v, a_total])
+            return ydot
+
+        y0 = np.concatenate((positions[0, :], velocities[0, :]))
+
+        sol = solve_ivp(_sim_ode, t_span=(t0, tf), y0=y0, method='RK45', t_eval=None,
+                        dense_output=False, first_step=86400.0, atol=1.0E-12, rtol=1.0E-12)
+
+        t = sol.t
+        r = sol.y.T[:, :3]
+        v = sol.y.T[:, 3:]
+
+        # Evaluate control at all times
+        u = np.array([interp_u0(t), interp_u1(t), interp_u2(t)]).T
+        u = np.zeros_like(v)
+
+        return t, r, v, u
+
+
 
 class GTOC13Solution(BaseModel):
     """
@@ -208,41 +392,216 @@ class GTOC13Solution(BaseModel):
             all_points.extend(arc.to_state_points())
         return all_points
 
-    def write_solution_file(self, filepath: str | Path, precision: int = 6) -> None:
+    def write(self, stream: TextIO = sys.stdout, precision: int = 15) -> None:
+        """
+        Write the solution to a stream in GTOC13 submission format.
+
+        Args:
+            stream: Output stream (default: sys.stdout)
+            precision: Number of decimal places for floating point numbers (default: 15)
+        """
+        from datetime import datetime
+        from gtoc13.bodies import bodies_data
+        from gtoc13.constants import YEAR
+
+        # Write header comments
+        stream.write("# GTOC13 Solution File\n")
+        stream.write(f"# Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        stream.write("# Units: epoch(s), position(km), velocity(km/s)\n")
+
+        # Write custom comments
+        for comment in self.comments:
+            if not comment.startswith('#'):
+                comment = f"# {comment}"
+            stream.write(f"{comment}\n")
+
+        stream.write("#\n")
+
+        # Write arcs with headers
+        for arc in self.arcs:
+            if isinstance(arc, PropagatedArc):
+                # Propagated arc header
+                t_start = arc.state_points[0].epoch / YEAR
+                t_end = arc.state_points[-1].epoch / YEAR
+                stream.write(f"# Propagated Arc: Body 0 (heliocentric) from t={t_start:.6f} years to t={t_end:.6f} years\n")
+                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
+                           f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
+                           f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
+                           f"{'cx':>{precision+8}} {'cy':>{precision+8}} {'cz':>{precision+8}}\n")
+            elif isinstance(arc, ConicArc):
+                # Conic arc header
+                t_start = arc.epoch_start / YEAR
+                t_end = arc.epoch_end / YEAR
+                stream.write(f"# Conic Arc: Body 0 (heliocentric) from t={t_start:.6f} years to t={t_end:.6f} years\n")
+                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
+                           f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
+                           f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
+                           f"{'cx':>{precision+8}} {'cy':>{precision+8}} {'cz':>{precision+8}}\n")
+            elif isinstance(arc, FlybyArc):
+                # Flyby arc header
+                t_flyby = arc.epoch / YEAR
+                body_name = bodies_data.get(arc.body_id, None)
+                if body_name and hasattr(body_name, 'name'):
+                    name_str = f" ({body_name.name})"
+                else:
+                    name_str = ""
+                # Calculate v_inf magnitude from the incoming v_inf vector
+                v_inf_mag = np.sqrt(arc.v_inf_in[0]**2 + arc.v_inf_in[1]**2 + arc.v_inf_in[2]**2)
+                stream.write(f"# Flyby of Body {arc.body_id}{name_str} at t={t_flyby:.6f} years, v_inf={v_inf_mag:.6f} km/s\n")
+                stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
+                           f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
+                           f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
+                           f"{'v_inf_x':>{precision+8}} {'v_inf_y':>{precision+8}} {'v_inf_z':>{precision+8}}\n")
+
+            # Write state points for this arc
+            for point in arc.to_state_points():
+                # Format with specified precision (scientific notation)
+                line = (
+                    f"  {point.body_id:>10d} {point.flag:>6d} {point.epoch:>{16+8}.{16}e} "
+                    f"{point.position[0]:>{precision+8}.{precision}e} {point.position[1]:>{precision+8}.{precision}e} {point.position[2]:>{precision+8}.{precision}e} "
+                    f"{point.velocity[0]:>{precision+8}.{precision}e} {point.velocity[1]:>{precision+8}.{precision}e} {point.velocity[2]:>{precision+8}.{precision}e} "
+                    f"{point.control[0]:>{precision+8}.{precision}e} {point.control[1]:>{precision+8}.{precision}e} {point.control[2]:>{precision+8}.{precision}e}\n"
+                )
+                stream.write(line)
+
+    def write_to_file(self, filepath: str | Path, precision: int = 15) -> None:
         """
         Write the solution to a file in GTOC13 submission format.
 
         Args:
             filepath: Path to output file
-            precision: Number of decimal places for floating point numbers
+            precision: Number of decimal places for floating point numbers (default: 15)
         """
         filepath = Path(filepath)
-
         with open(filepath, 'w') as f:
-            # Write header comments
-            f.write("# GTOC13 Solution File\n")
-            f.write("# Format: body_id flag epoch x y z vx vy vz cx cy cz\n")
-            f.write("# Units: epoch(s), position(km), velocity(km/s)\n")
+            self.write(stream=f, precision=precision)
 
-            # Write custom comments
-            for comment in self.comments:
-                if not comment.startswith('#'):
-                    comment = f"# {comment}"
-                f.write(f"{comment}\n")
+    def plot(self, show_bodies: bool = True, figsize: tuple = (12, 10), save_path: str | Path | None = None):
+        """
+        Plot the heliocentric trajectory arcs and body orbits in the x-y plane.
 
-            f.write("#\n")
+        Args:
+            show_bodies: If True, plot the orbits of bodies involved in flybys
+            figsize: Figure size (width, height) in inches
+            save_path: Optional path to save the figure. If None, displays the plot.
 
-            # Write state points
-            state_points = self.to_state_points()
-            for point in state_points:
-                # Format with specified precision
-                line = (
-                    f"{point.body_id:d} {point.flag:d} {point.epoch:.{precision}f} "
-                    f"{point.position[0]:.{precision}f} {point.position[1]:.{precision}f} {point.position[2]:.{precision}f} "
-                    f"{point.velocity[0]:.{precision}f} {point.velocity[1]:.{precision}f} {point.velocity[2]:.{precision}f} "
-                    f"{point.control[0]:.{precision}f} {point.control[1]:.{precision}f} {point.control[2]:.{precision}f}\n"
-                )
-                f.write(line)
+        Returns:
+            matplotlib figure and axis objects
+        """
+        import matplotlib.pyplot as plt
+        from gtoc13.bodies import bodies_data
+        from gtoc13.constants import YEAR
+
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Plot the sun at origin
+        ax.plot(0, 0, 'yo', markersize=15, label='Altaira (Sun)', zorder=10)
+
+        # Collect all body IDs involved in flybys
+        body_ids = set()
+        for arc in self.arcs:
+            if isinstance(arc, FlybyArc):
+                body_ids.add(arc.body_id)
+
+        # Plot body orbits if requested
+        if show_bodies and body_ids:
+            import numpy as np
+
+            # Generate full orbits for each body
+            for body_id in sorted(body_ids):
+                body = bodies_data.get(body_id)
+                if body is None:
+                    continue
+
+                # Get body name
+                name = body.name if hasattr(body, 'name') else f'Body {body_id}'
+
+                # Generate orbit points (one full period)
+                period = body.get_period('s')  # Period in seconds
+                times = np.linspace(0, period, 200)
+
+                orbit_x = []
+                orbit_y = []
+                for t in times:
+                    state = body.get_state(t, time_units='s')
+                    orbit_x.append(state.r[0])
+                    orbit_y.append(state.r[1])
+
+                # Plot orbit as dashed line
+                ax.plot(orbit_x, orbit_y, '--', alpha=0.5, linewidth=1, label=f'{name} orbit')
+
+        # Plot trajectory arcs
+        for i, arc in enumerate(self.arcs):
+            if isinstance(arc, PropagatedArc):
+                # Extract x, y positions from propagated arc
+                x = [pt.position[0] for pt in arc.state_points]
+                y = [pt.position[1] for pt in arc.state_points]
+
+                # Plot propagated arc
+                ax.plot(x, y, 'b-', linewidth=2, alpha=0.7,
+                       label='Trajectory' if i == 0 else None)
+
+                # Mark start and end points
+                ax.plot(x[0], y[0], 'go', markersize=8, zorder=5)
+                ax.plot(x[-1], y[-1], 'ro', markersize=8, zorder=5)
+
+            elif isinstance(arc, FlybyArc):
+                # Mark flyby location
+                x_flyby = arc.position[0] if hasattr(arc, 'position') else None
+                y_flyby = arc.position[1] if hasattr(arc, 'position') else None
+
+                if x_flyby is not None and y_flyby is not None:
+                    body = bodies_data.get(arc.body_id)
+                    name = body.name if body and hasattr(body, 'name') else f'Body {arc.body_id}'
+
+                    ax.plot(x_flyby, y_flyby, 'r*', markersize=15,
+                           label=f'Flyby: {name}' if i < 5 else None, zorder=6)
+
+                    # Add annotation for flyby
+                    t_flyby = arc.epoch / YEAR if hasattr(arc, 'epoch') else None
+                    if t_flyby is not None:
+                        ax.annotate(f'{name}\nt={t_flyby:.1f} yr',
+                                  xy=(x_flyby, y_flyby),
+                                  xytext=(10, 10), textcoords='offset points',
+                                  fontsize=8, alpha=0.7)
+
+        # Formatting
+        ax.set_xlabel('X Position (km)', fontsize=12)
+        ax.set_ylabel('Y Position (km)', fontsize=12)
+        ax.set_title('GTOC13 Trajectory Solution (X-Y Plane)', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.axis('equal')
+        ax.legend(loc='best', fontsize=10)
+
+        # Add mission statistics as text
+        num_flybys = sum(1 for arc in self.arcs if isinstance(arc, FlybyArc))
+        num_prop_arcs = sum(1 for arc in self.arcs if isinstance(arc, PropagatedArc))
+
+        # Calculate total mission time
+        last_epoch = 0
+        for arc in self.arcs:
+            if isinstance(arc, PropagatedArc) and arc.state_points:
+                last_epoch = max(last_epoch, arc.state_points[-1].epoch)
+            elif isinstance(arc, FlybyArc) and hasattr(arc, 'epoch'):
+                last_epoch = max(last_epoch, arc.epoch)
+
+        mission_time = last_epoch / YEAR if last_epoch > 0 else 0
+
+        info_text = f'Flybys: {num_flybys}\nProp. Arcs: {num_prop_arcs}\nMission Time: {mission_time:.2f} years'
+        ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
+               verticalalignment='top', fontsize=10,
+               bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        plt.tight_layout()
+
+        # Save or show
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Plot saved to {save_path}")
+        else:
+            plt.show()
+
+        return fig, ax
 
     @classmethod
     def from_file(cls, filepath: str | Path) -> 'GTOC13Solution':
@@ -358,71 +717,3 @@ class GTOC13Solution(BaseModel):
                 arcs.append(PropagatedArc(state_points=prop_points))
 
         return arcs
-
-
-# Convenience functions for creating arcs
-def create_flyby(
-    body_id: int,
-    epoch: float,
-    position: Tuple[float, float, float],
-    velocity_in: Tuple[float, float, float],
-    velocity_out: Tuple[float, float, float],
-    v_inf_in: Tuple[float, float, float],
-    v_inf_out: Tuple[float, float, float],
-    is_science: bool = True
-) -> FlybyArc:
-    """Convenience function to create a flyby arc"""
-    return FlybyArc(
-        body_id=body_id,
-        is_science=is_science,
-        epoch=epoch,
-        position=position,
-        velocity_in=velocity_in,
-        velocity_out=velocity_out,
-        v_inf_in=v_inf_in,
-        v_inf_out=v_inf_out
-    )
-
-
-def create_conic(
-    epoch_start: float,
-    epoch_end: float,
-    position_start: Tuple[float, float, float],
-    position_end: Tuple[float, float, float],
-    velocity_start: Tuple[float, float, float],
-    velocity_end: Tuple[float, float, float]
-) -> ConicArc:
-    """Convenience function to create a conic arc"""
-    return ConicArc(
-        epoch_start=epoch_start,
-        epoch_end=epoch_end,
-        position_start=position_start,
-        position_end=position_end,
-        velocity_start=velocity_start,
-        velocity_end=velocity_end
-    )
-
-
-def create_propagated(
-    epochs: List[float],
-    positions: List[Tuple[float, float, float]],
-    velocities: List[Tuple[float, float, float]],
-    controls: List[Tuple[float, float, float]]
-) -> PropagatedArc:
-    """Convenience function to create a propagated arc from lists"""
-    if not (len(epochs) == len(positions) == len(velocities) == len(controls)):
-        raise ValueError("All lists must have the same length")
-
-    state_points = [
-        StatePoint(
-            body_id=0,
-            flag=1,
-            epoch=epoch,
-            position=pos,
-            velocity=vel,
-            control=ctrl
-        )
-        for epoch, pos, vel, ctrl in zip(epochs, positions, velocities, controls)
-    ]
-
-    return PropagatedArc(state_points=state_points)

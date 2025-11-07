@@ -53,7 +53,7 @@ jobs:
       shell: bash -el {0}
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Install dependencies (latest versions)
       if: matrix.dependency-version == 'latest'
@@ -61,11 +61,21 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         # Install latest versions of all dependencies
-        pip install --upgrade \
+        python -m pip install --upgrade \
           jax jaxlib numpy diffrax pydantic \
           pytest isort mypy
         # Install package in development mode
-        pip install -e . --no-deps
+        python -m pip install -e . --no-deps
+
+    - name: Install dymos gtoc version
+      shell: bash -el {0}
+      run: |
+        python -m pip install git+https://github.com/robfalck/dymos.git@gtoc13
+
+    - name: Install pyoptsparse and ipopt
+      shell: bash -el {0}
+      run: |
+        micromamba install -y -n test-env -c conda-forge pyoptsparse cyipopt
 
     - name: Display installed versions
       shell: bash -el {0}

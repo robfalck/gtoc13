@@ -14,29 +14,51 @@ from .constants import (
 )
 
 
-@jit
 def solve_kepler(M: float, e: float, tol: float = 1e-10, max_iter: int = 50) -> float:
     """
     Solve Kepler's equation M = E - e*sin(E) for eccentric anomaly E
-    using Newton-Raphson iteration.
+    using Newton-Raphson iteration with jax.lax.scan for AD compatibility.
     """
     # Initial guess: use jax.lax.cond for JIT compatibility
-    E = jax.lax.cond(e < 0.8, lambda: M, lambda: jnp.pi)
+    E = jax.lax.cond(e < 0.8, lambda: M, lambda: jnp.pi * jnp.ones_like(M))
 
-    def body_fn(carry):
-        E, i = carry
+    def body_fn(E, _):
+        # Newton-Raphson iteration
         f = E - e * jnp.sin(E) - M
         fp = 1.0 - e * jnp.cos(E)
         E_new = E - f / fp
-        return (E_new, i + 1)
+        return E_new, E_new
 
-    def cond_fn(carry):
-        E, i = carry
-        E_prev = E - (E - e * jnp.sin(E) - M) / (1.0 - e * jnp.cos(E))
-        return (jnp.abs(E - E_prev) > tol) & (i < max_iter)
-
-    E_final, _ = jax.lax.while_loop(cond_fn, body_fn, (E, 0))
+    # Run fixed number of iterations using scan (compatible with reverse-mode AD)
+    E_final, _ = jax.lax.scan(body_fn, E, None, length=max_iter)
     return E_final
+
+
+# Vectorized version using vmap
+# Note: vmap over first two arguments (M and e arrays), broadcast tol and max_iter
+_solve_kepler_vec = jax.vmap(solve_kepler, in_axes=(0, 0, None, None))
+
+def solve_kepler_vec(M, e, tol=1e-10, max_iter=50):
+    """
+    Vectorized version of solve_kepler that handles arrays of M and e.
+
+    Parameters
+    ----------
+    M : jnp.ndarray
+        Array of mean anomalies
+    e : jnp.ndarray
+        Array of eccentricities
+    tol : float, optional
+        Tolerance for convergence
+    max_iter : int, optional
+        Maximum number of iterations
+
+    Returns
+    -------
+    E : jnp.ndarray
+        Array of eccentric anomalies
+    """
+    return _solve_kepler_vec(M, e, tol, max_iter)
 
 
 @jit
@@ -95,6 +117,87 @@ def elements_to_cartesian(elements: OrbitalElements, t: float) -> CartesianState
     return CartesianState(r=jnp.array([x, y, z]), v=jnp.array([vx, vy, vz]))
 
 
+def elements_to_pos_vel(elements: jnp.ndarray, t: float, mu=MU_ALTAIRA) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """
+    Convert orbital elements to Cartesian position and velocity vectors at time t.
+    
+    Parameters
+    ----------
+    elements : jnp.ndarray
+        An array of the 6 orbital elements of each body:
+        - semi-major axis (distance units)
+        - eccentricity (unitless)
+        - inclination (radians)
+        - right ascension of ascending node (radians)
+        - argument of periapsis (radians)
+        - mean anomaly at the year 0 epoch (radians)
+    time : float
+        The time at which the cartesian state is requested.
+    mu : float
+        The gravitational parameter of the central body.
+
+    Returns
+    -------
+    r : jnp.ndarray
+        Cartesian position in distance units.
+    v : jnp.ndarray
+        Cartesian velocity in distance units / time units.   
+        
+    """
+    a, e, i, raan, argp, M0 = elements[:, 0], elements[:, 1], elements[:, 2], elements[:, 3], elements[:, 4], elements[:, 5]
+    mu = MU_ALTAIRA
+    
+    # Mean motion
+    n = jnp.sqrt(mu / a**3)
+    
+    # Mean anomaly at time t
+    M = M0 + n * t
+    
+    # Solve for eccentric anomaly
+    E = solve_kepler_vec(M, e, tol=1.0E-15, max_iter=100)
+    
+    # True anomaly
+    theta = 2.0 * jnp.arctan2(
+        jnp.sqrt(1.0 + e) * jnp.sin(E / 2.0),
+        jnp.sqrt(1.0 - e) * jnp.cos(E / 2.0)
+    )
+    
+    # Distance
+    r_mag = a * (1.0 - e**2) / (1.0 + e * jnp.cos(theta))
+    
+    # Velocity magnitude
+    v_mag = jnp.sqrt(2.0 * mu / r_mag - mu / a)
+    
+    # Flight path angle
+    gamma = jnp.arctan2(e * jnp.sin(theta), 1.0 + e * jnp.cos(theta))
+    
+    # Position in orbital plane
+    cos_theta_argp = jnp.cos(theta + argp)
+    sin_theta_argp = jnp.sin(theta + argp)
+    cos_raan = jnp.cos(raan)
+    sin_raan = jnp.sin(raan)
+    cos_i = jnp.cos(i)
+    sin_i = jnp.sin(i)
+    
+    x = r_mag * (cos_theta_argp * cos_raan - sin_theta_argp * cos_i * sin_raan)
+    y = r_mag * (cos_theta_argp * sin_raan + sin_theta_argp * cos_i * cos_raan)
+    z = r_mag * sin_theta_argp * sin_i
+    
+    # Velocity in orbital plane
+    cos_theta_omega_gamma = jnp.cos(theta + argp - gamma)
+    sin_theta_omega_gamma = jnp.sin(theta + argp - gamma)
+    
+    vx = v_mag * (-sin_theta_omega_gamma * cos_raan - cos_theta_omega_gamma * cos_i * sin_raan)
+    vy = v_mag * (-sin_theta_omega_gamma * sin_raan + cos_theta_omega_gamma * cos_i * cos_raan)
+    vz = v_mag * cos_theta_omega_gamma * sin_i
+
+    # Stack to (n, 3) shape: each row is [x, y, z] for one body
+    r = jnp.stack([x, y, z], axis=1)
+    v = jnp.stack([vx, vy, vz], axis=1)
+
+    return r, v
+
+
 @jit
 def compute_v_infinity(v_sc: jnp.ndarray, v_body: jnp.ndarray) -> Tuple[jnp.ndarray, float]:
     """
@@ -149,6 +252,82 @@ def patched_conic_flyby(
     is_valid = (mag_diff < 1e-4) & (h_p >= 0.1 * r_body) & (h_p <= 100.0 * r_body)
     
     return h_p, is_valid
+
+
+def flyby_defects_in_out(
+    v_in: jnp.ndarray,
+    v_out: jnp.ndarray,
+    v_body: jnp.ndarray,
+    mu_body: float,
+    r_body: float
+) -> Tuple[float, float]:
+    """
+    Compute parameters which determine whether a flyby is valid.
+
+    Returns the body-centric difference between the incoming and
+    outgoing v-infinity magnitudes, and the parabolic defect associated
+    with the flyby altitude.
+
+    The h_p_defect uses a parabolic (C2 continuous) constraint:
+    - h_p_defect < 0: altitude is within valid range [0.1, 100] body radii
+    - h_p_defect = 0: altitude is at boundary (0.1 or 100 body radii)
+    - h_p_defect > 0: altitude violates constraints (< 0.1 or > 100 body radii)
+
+    The parabolic form provides smooth first and second derivatives, making
+    it easier to optimize as a constraint compared to ReLU-based formulations.
+
+    Args:
+        v_in: incoming inertial velocity (km/s, DU/TU, or AU/year)
+        v_out: outgoing inertial velocity (km/s, DU/TU, or AU/year)
+        v_body: body inertial velocity (km/s, DU/TU, or AU/year)
+        mu_body: GM of the body (km^3/s^2)
+        r_body: radius of the body (km)
+
+    Returns:
+        (v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect)
+    """
+    v_inf_in = v_in - v_body
+    v_inf_out = v_out - v_body
+
+    # V_inf magnitude defect
+    # Need to be the same from the body frame
+    v_inf_in_mag = jnp.linalg.norm(v_inf_in)
+    v_inf_out_mag = jnp.linalg.norm(v_inf_out)
+    v_inf_mag_defect = v_inf_out_mag - v_inf_in_mag
+
+    # Turn angle calculation
+    # For this purpose, use the average of the two v_inf magnitudes
+    # When defects are satisfied, they will be the same anyway.
+    cos_delta = jnp.dot(v_inf_out / v_inf_out_mag, v_inf_in / v_inf_in_mag)
+    cos_delta = jnp.clip(cos_delta, -1.0, 1.0)
+    delta = jnp.arccos(cos_delta)
+
+    # Compute flyby altitude from turn angle
+    sin_half_delta = jnp.sin(delta / 2.0)
+
+    # rp = (mu_body / v_inf^2) * (1/sin(delta/2) - 1)
+    rp = (mu_body / (v_inf_in_mag**2)) * (1.0 / sin_half_delta - 1.0)
+    h_p_norm = (rp - r_body) / r_body
+
+    # Compute altitude constraint defect (parabolic response)
+    # h_p_defect < 0 means altitude is valid (between 0.1 and 100 radii)
+    # h_p_defect = 0 at the boundaries (h_p_norm = 0.1 or 100)
+    # h_p_defect > 0 means altitude violates constraints (< 0.1 or > 100 radii)
+    #
+    # Parabolic form that opens upward:
+    # When h_lower < h_p_norm < h_upper:
+    #   - (h_p_norm - h_lower) > 0
+    #   - (h_p_norm - h_upper) < 0
+    #   - Product is negative (satisfied constraint)
+    # When h_p_norm < h_lower OR h_p_norm > h_upper:
+    #   - Both factors have same sign
+    #   - Product is positive (violated constraint)
+    h_lower = 0.1
+    h_upper = 100.0
+
+    h_p_defect = (h_p_norm - h_lower) * (h_p_norm - h_upper)
+
+    return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect
 
 
 @jit
