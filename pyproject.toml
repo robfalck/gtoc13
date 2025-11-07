@@ -33,6 +33,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "pyomo>=6.9.0",
     "tqdm>=4.67.1",
+    "openmdao>=3.41.0",
 ]
 
 [project.optional-dependencies]
