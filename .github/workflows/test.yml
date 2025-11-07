@@ -72,6 +72,11 @@ jobs:
       run: |
         python -m pip install git+https://github.com/robfalck/dymos.git@gtoc13
 
+    - name: Install pyoptsparse and ipopt
+      shell: bash -el {0}
+      run: |
+        micromamba install -y -n test-env -c conda-forge pyoptsparse cyipopt
+
     - name: Display installed versions
       shell: bash -el {0}
       run: |
