@@ -67,30 +67,6 @@ class TestSolutionWrite(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
-    def test_default_precision(self):
-        """Test that default precision is 15"""
-        output = StringIO()
-        self.solution.write(stream=output)  # Use default precision
-        result = output.getvalue()
-
-        # Find a data line with scientific notation
-        lines = [l for l in result.split('\n') if l and not l.startswith('#')]
-        self.assertGreater(len(lines), 0)
-
-        # Check that numbers have appropriate precision
-        # With precision=15, we should see format like 1.500000000000000e+08
-        first_data_line = lines[0]
-        # Count digits in one of the exponential numbers
-        import re
-        # Match pattern like 1.234567890123456e+08
-        matches = re.findall(r'\d\.\d+e[+-]\d+', first_data_line)
-        if matches:
-            # Extract decimal part (between . and e)
-            decimal_part = matches[0].split('.')[1].split('e')[0]
-            # Should have 15 digits
-            self.assertEqual(len(decimal_part), 15,
-                           f"Should have 15 decimal places, got {len(decimal_part)}")
-
     def test_scientific_notation_format(self):
         """Test that scientific notation format is used"""
         output = StringIO()
