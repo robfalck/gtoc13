@@ -67,6 +67,12 @@ jobs:
         # Install package in development mode
         pip install -e . --no-deps
 
+    - name: Install dymos gtoc version
+      if: matrix.dependency-version == 'latest'
+      shell: bash -el {0}
+      run: |
+        pip install git+https://github.com/robfalck/dymos.git@gtoc13
+
     - name: Display installed versions
       shell: bash -el {0}
       run: |
