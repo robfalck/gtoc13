@@ -53,7 +53,7 @@ jobs:
       shell: bash -el {0}
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev]"
+        python -m pip install -e ".[dev]"
 
     - name: Install dependencies (latest versions)
       if: matrix.dependency-version == 'latest'
@@ -61,17 +61,16 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         # Install latest versions of all dependencies
-        pip install --upgrade \
+        python -m pip install --upgrade \
           jax jaxlib numpy diffrax pydantic \
           pytest isort mypy
         # Install package in development mode
-        pip install -e . --no-deps
+        python -m pip install -e . --no-deps
 
     - name: Install dymos gtoc version
-      if: matrix.dependency-version == 'latest'
       shell: bash -el {0}
       run: |
-        pip install git+https://github.com/robfalck/dymos.git@gtoc13
+        python -m pip install git+https://github.com/robfalck/dymos.git@gtoc13
 
     - name: Display installed versions
       shell: bash -el {0}
