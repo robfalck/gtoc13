@@ -36,7 +36,7 @@ def run_basic_problem(index_params: IndexParams, discrete_data: dict, solver_par
 
 
 @timer
-def run_trajseg_problem(
+def run_trajectory_problem(
     index_params: IndexParams, discrete_data: dict, dv_table: DVTable, solver_params: SolverParams
 ):
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")

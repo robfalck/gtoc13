@@ -6,7 +6,7 @@ from typing import Any
 from numpy import round
 from gtoc13 import YEAR, SPTU
 from pprint import pprint
-from build_model import nogood_cuts_constrs
+from build_model import nogood_cuts_iteration_constrs
 
 
 @timer
@@ -23,10 +23,61 @@ def run_solver(
     results = solver.solve(
         model,
         tee=solver_params.toconsole,
+        options={"limits/gap": solver_params.soln_gap}
+        if solver_params.solver_name == "scip"
+        else None,
         logfile=output_path / f"solverlog_{iter}.txt" if solver_params.write_log else None,
     )
     print(f"...iteration {iter} solved...")
     return results, solver
+
+
+def process_sequence(
+    model: pyo.ConcreteModel,
+) -> tuple[list[SequenceTarget], list[tuple[int, int]]]:
+    sequence = [
+        (h, (model.name_k[k], (k, i)), round((model.tu_ki[k, i] * SPTU / YEAR).tolist(), 3))
+        for (k, i, h), v in model.x_kih.items()
+        if pyo.value(v) > 0.5
+    ]
+    sequence = sorted(sequence, key=lambda x: (x[2], x[0]))
+    print("Sequence (h-th position, k-th body, i-th timestep in years):")
+    pprint(sequence)
+    print("\n")
+    short_seq = [each[1][1] for each in sequence]
+    sequence = [
+        SequenceTarget(
+            place=each[0], name=each[1][0], ID=each[1][1], t_idx=each[1][2], year=each[2]
+        )
+        for each in sequence
+    ]
+    return sequence, short_seq
+
+
+def process_arcs(model: pyo.ConcreteModel, short_seq: list[tuple[int, int]]):
+    if model.find_component("L_kimj"):
+        print("Number of lambert arcs: ", int(round(pyo.value(pyo.summation(model.L_kimj)))), "\n")
+        print("Lambert arcs (k, i) to (m, j):")
+        lambert_arcs = [
+            [
+                short_seq.index((k, i)) + 1,
+                f"({k}, {i}) to ({m}, {j})",
+                f"dv_tot: {round(model.dv_kimj[k, i, m, j], 3)}",
+            ]
+            for (k, i, m, j), v in model.L_kimj.items()
+            if pyo.value(v) > 0.5
+        ]
+        lambert_arcs = sorted(lambert_arcs)
+        for arc in lambert_arcs:
+            print(arc)
+        print("\n")
+    else:
+        lambert_arcs = None
+    return lambert_arcs
+
+
+def process_flybys(model: pyo.ConcreteModel):
+    pass
 
 
 def print_solution(
@@ -36,47 +87,21 @@ def print_solution(
         print("Infeasible, sorry :(\n")
         sequence = None
     else:
-        sequence = [
-            (h, (model.name_k[k], (k, t)), round((model.tu_kt[k, t] * SPTU / YEAR).tolist(), 3))
-            for (k, t, h), v in model.x_kth.items()
-            if pyo.value(v) > 0.5
-        ]
-        sequence = sorted(sequence, key=lambda x: (x[2], x[0]))
-        print("Sequence (h-th position, k-th body, t in years):")
-        pprint(sequence)
-        short_seq = [each[1][1] for each in sequence]
-        print("\n")
-        if model.find_component("L_kimj"):
-            print(
-                "Number of lambert arcs: ", int(round(pyo.value(pyo.summation(model.L_kimj)))), "\n"
-            )
-            print("Lambert arcs (k, i) to (m, j):")
-            lambert_arcs = [
-                [
-                    short_seq.index((k, i)) + 1,
-                    f"({k}, {i}) to ({m}, {j})",
-                    f"dv_tot: {round(model.dv_kimj[k, i, m, j], 3)}",
-                ]
-                for (k, i, m, j), v in model.L_kimj.items()
-                if pyo.value(v) > 0.5
-            ]
-            lambert_arcs = sorted(lambert_arcs)
-            for arc in lambert_arcs:
-                print(arc)
-            print("\n")
+        sequence, short_seq = process_sequence(model=model)
+        arcs = process_arcs(model=model)
+
+        ######
         print("Number of repeated flybys:", int(round(pyo.value(pyo.summation(model.y_kij)))), "\n")
         print("First flyby keys (k, i-th):")
-        first_flybys = [kt for kt, v in model.z_kt.items() if pyo.value(v) > 0.5]
-        pprint(sorted(first_flybys, key=lambda x: model.tu_kt[x]))
+        first_flybys = [ki for ki, v in model.z_ki.items() if pyo.value(v) > 0.5]
+        pprint(sorted(first_flybys, key=lambda x: model.tu_ki[x]))
         if pyo.value(pyo.summation(model.y_kij) > 0):
             print("\n")
             print("Repeat flyby keys (k, i-th, j-th prev):")
             for kij, v in model.y_kij.items():
                 if pyo.value(v) > 0.5:
                     print(kij)
-        sequence = [
-            SequenceTarget(order=each[0], body_state=each[1], year=each[2]) for each in sequence
-        ]
+
         print(f"\n...iteration {iter} complete...\n")
     return sequence
 
@@ -85,7 +110,7 @@ def print_solution(
 def generate_iterative_solutions(
     model: pyo.ConcreteModel, solver_params: SolverParams
 ) -> list[list[SequenceTarget]]:
-    print(f">>>>> RUN SOLVER FOR {solver_params.solv_iter} ITERATIONS(S) <<<<<")
+    print(f">>>>> RUN SOLVER FOR {solver_params.solv_iter} ITERATIONS(S) >>>>>")
     for iter in range(solver_params.solv_iter):
         results, solver = run_solver(model=model, solver_params=solver_params, iter=iter + 1)
         soln_seq = print_solution(model=model, results=results, iter=iter + 1)
@@ -96,6 +121,10 @@ def generate_iterative_solutions(
         if iter < solver_params.solv_iter - 2:
             ### create no-good cuts for multiple solutions of the same problem ###
             print(f"...start no-good cuts for iteration {iter + 2}...")
-            nogood_cuts_constrs(seq_model=model)
+            nogood_cuts_iteration_constrs(seq_model=model)
             print("<<<<< FINISHED RUNNING ALL ITERATIONS <<<<<")
     return soln_seqs
+
+
+def generate_segment_t():
+    pass

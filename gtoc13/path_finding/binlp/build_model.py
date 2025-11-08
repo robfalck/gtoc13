@@ -25,7 +25,7 @@ def initialize_model(index_params: IndexParams, discrete_data: dict) -> pyo.Conc
     Inputs to the problem dictate the dimensionality of the generated model.
 
     k : k-th index for body
-    t, i, j : t-th timestep index, with i and j as dummy indices for t. This is NOT the actual timestep!
+    i, j : i-th timestep index, with j as dummy index for i. This is NOT the actual timestep!
     h : h-th position in the sequence
 
     Cartesian products of these indices are used for variable and constraint construction.
@@ -37,7 +37,7 @@ def initialize_model(index_params: IndexParams, discrete_data: dict) -> pyo.Conc
     seq_model.name = "SequenceSearch"
     print("...create main indices and parameters...")
     seq_model.K = pyo.Set(initialize=index_params.bodies_ID)  # body index
-    seq_model.T = pyo.RangeSet(index_params.n_timesteps)  # timestep index, NOT SAME TIMESTEP
+    seq_model.I = pyo.RangeSet(index_params.n_timesteps)  # timestep index, NOT SAME TIMESTEP
     seq_model.H = pyo.RangeSet(index_params.seq_length)  # sequence position index
     seq_model.w_k = pyo.Param(
         seq_model.K, initialize=lambda model, k: bodies[k].weight, within=pyo.PositiveReals
@@ -53,31 +53,29 @@ def initialize_model(index_params: IndexParams, discrete_data: dict) -> pyo.Conc
     seq_model.dt_tol = pyo.Param(initialize=(DAY * 7 / SPTU).tolist(), within=pyo.PositiveReals)
 
     # Cartesian product sets
-    seq_model.KT = pyo.Set(initialize=[(k, t) for k in seq_model.K for t in seq_model.T])
+    seq_model.KI = pyo.Set(initialize=[(k, i) for k in seq_model.K for i in seq_model.I])
     seq_model.KIJ = pyo.Set(
-        initialize=[(k, i, j) for k in seq_model.K for i in seq_model.T for j in range(1, i)]
+        initialize=[(k, i, j) for k in seq_model.K for i in seq_model.I for j in range(1, i)]
     )
 
     # Parameters requiring the Cartesian product sets
-    seq_model.tu_kt = pyo.Param(
-        seq_model.KT,
-        initialize=lambda model, k, t: bodies[k].t_tu[t - 1].tolist(),
+    seq_model.tu_ki = pyo.Param(
+        seq_model.KI,
+        initialize=lambda model, k, i: bodies[k].t_tu[i - 1].tolist(),
         within=pyo.NonNegativeReals,
     )
-    seq_model.rdu_kt = pyo.Param(
-        seq_model.KT,
-        initialize=lambda model, k, t: bodies[k].r_du[t - 1],
+    seq_model.rdu_ki = pyo.Param(
+        seq_model.KI,
+        initialize=lambda model, k, i: bodies[k].r_du[i - 1],
         within=pyo.Any,
     )
-
-    ### Print out important details ###
     return seq_model
 
 
 @timer
 def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     """
-    x[k,t,h] : primary binary variable to select body k at timestep t for position h
+    x[k,i,h] : primary binary variable to select body k at timestep i for position h
 
     Constraints imposed:
     - no more than one selection per position h
@@ -88,47 +86,47 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     - do not repeat bodies between h and h+1
 
     """
-    print("...create x_kth binary variable...")
+    print("...create x_kih binary variable...")
     # X Binary Decision Variable: k-th body, t-th timestep, and h-th position in the sequence
-    seq_model.x_kth = pyo.Var(seq_model.K * seq_model.T * seq_model.H, within=pyo.Binary)
+    seq_model.x_kih = pyo.Var(seq_model.K * seq_model.I * seq_model.H, within=pyo.Binary)
 
     print("...create x parition constraint...")
     # x partition constraint: selection of bodies must equal to h_tot
     seq_model.x_partition = pyo.Constraint(
-        rule=pyo.summation(seq_model.x_kth) == seq_model.H.at(-1)
+        rule=pyo.summation(seq_model.x_kih) == seq_model.H.at(-1)
     )
 
     print("...create x_**h partition constraints...")
     # for each h, there must only be one body at some time
     seq_model.x_h_partition = pyo.Constraint(
         seq_model.H,
-        rule=lambda model, h: pyo.quicksum(model.x_kth[..., h]) == 1,
+        rule=lambda model, h: pyo.quicksum(model.x_kih[..., h]) == 1,
     )
 
-    print("...create x_kt* packing constraints...")
-    # for each (k,t), it can only exist in one position at most
-    seq_model.x_kt_packing = pyo.Constraint(
-        seq_model.KT, rule=lambda model, k, t: pyo.quicksum(model.x_kth[k, t, :]) <= 1
+    print("...create x_ki* packing constraints...")
+    # for each (k,i), it can only exist in one position at most
+    seq_model.x_ki_packing = pyo.Constraint(
+        seq_model.KI, rule=lambda model, k, i: pyo.quicksum(model.x_kih[k, i, :]) <= 1
     )
 
     print("...create x_k** max number of scientific flybys...")
     # for each k, there can only be a total of N_k flybys counted
     seq_model.flyby_limit = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...]) <= seq_model.Nk_limit,
+        rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) <= seq_model.Nk_limit,
     )
 
-    print("...create x_*th monotonic time constraints...")
+    print("...create x_*ih monotonic time constraints...")
     # for each h, the time must be greater than the previous h
 
     def monotime_rule(model, h):
         if h > 1:
             term = (
                 pyo.quicksum(
-                    model.tu_kt[k, t] * model.x_kth[k, t, h] for k in model.K for t in model.T
+                    model.tu_ki[k, i] * model.x_kih[k, i, h] for k in model.K for i in model.I
                 )
                 - pyo.quicksum(
-                    model.tu_kt[k, t] * model.x_kth[k, t, h - 1] for k in model.K for t in model.T
+                    model.tu_ki[k, i] * model.x_kih[k, i, h - 1] for k in model.K for i in model.I
                 )
                 >= seq_model.dt_tol
             )
@@ -143,7 +141,7 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     def nodupes_rule(model, k, h):
         if h > 1:
-            term = pyo.quicksum(model.x_kth[k, :, h]) + pyo.quicksum(model.x_kth[k, :, h - 1]) <= 1
+            term = pyo.quicksum(model.x_kih[k, :, h]) + pyo.quicksum(model.x_kih[k, :, h - 1]) <= 1
 
         else:
             term = pyo.Constraint.Skip
@@ -159,8 +157,8 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     Constraints imposed:
     - total number of previous flybys possible cannot be greater than (nk_lim-1)!
-    - if x_kt* is selected for k at t = i,j then y_kij can be toggled
-    - if x_kt* is not selected for k at both t = i,j, then y_kij cannot be toggled
+    - if x_k_* is selected for k at i,j then y_kij can be toggled
+    - if x_k_* is not selected for k at both i,j, then y_kij cannot be toggled
 
     """
     # y variables and constraints
@@ -181,7 +179,7 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
     seq_model.y_bigm1_x = pyo.Constraint(
         seq_model.KIJ,
         rule=lambda model, k, i, j: pyo.quicksum(
-            model.x_kth[k, i, h] + model.x_kth[k, j, h] for h in model.H
+            model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H
         )
         <= 10 * model.y_kij[k, i, j] + 1,
     )
@@ -189,7 +187,7 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
     seq_model.y_bigm2_x = pyo.Constraint(
         seq_model.KIJ,
         rule=lambda model, k, i, j: pyo.quicksum(
-            model.x_kth[k, i, h] + model.x_kth[k, j, h] for h in model.H
+            model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H
         )
         >= 2 - 10 * (1 - model.y_kij[k, i, j]),
     )
@@ -198,43 +196,43 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
 @timer
 def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
     """
-    z[k,t] : binary variable indicating the FIRST body k flyby at timestep t
+    z[k,i] : binary variable indicating the FIRST body k flyby at timestep i
 
     Constraints imposed:
     - only one FIRST flyby per k, if there are flybys
-    - if x_kt* is selected for k at t, then z_kt may be toggled
-    - if x_kt** is selected for k, then there must be one first flyby z_k*
-    - z_kt cannot be a first flyby if y_ki* for i = t indicates there are previous flybys
+    - if x_ki* is selected for k at i, then z_ki may be toggled
+    - if x_k** is selected for k, then there must be one first flyby z_k*
+    - z_ki cannot be a first flyby if y_ki* for timestep i indicates there are previous flybys
 
     """
-    print("...create z_kt indicator variable of first flyby at t for body k...")
-    # Z Binary Indicator Variable: k-th body, j-th first flyby timestep
-    seq_model.z_kt = pyo.Var(seq_model.KT, within=pyo.Binary)
+    print("...create z_ki indicator variable of first flyby at i for body k...")
+    # Z Binary Indicator Variable: k-th body, i-th first flyby timestep
+    seq_model.z_ki = pyo.Var(seq_model.KI, within=pyo.Binary)
 
     print("...create z_k* packing constraints...")
     # at most only ONE first flyby for body k
     seq_model.z_k_packing = pyo.Constraint(
-        seq_model.K, rule=lambda model, k: pyo.quicksum(model.z_kt[k, :]) <= 1
+        seq_model.K, rule=lambda model, k: pyo.quicksum(model.z_ki[k, :]) <= 1
     )
 
-    print("...create z_k* and z_kt implication constraints...")
-    # if there is a flyby at that time, then (k, t) can be a first flyby
+    print("...create z_k* and z_ki implication constraints...")
+    # if there is a flyby at that time, then (k, i) can be a first flyby
     seq_model.z_implies_x = pyo.Constraint(
-        seq_model.KT,
-        rule=lambda model, k, t: model.z_kt[k, t] <= pyo.quicksum(model.x_kth[k, t, :]),
+        seq_model.KI,
+        rule=lambda model, k, i: model.z_ki[k, i] <= pyo.quicksum(model.x_kih[k, i, :]),
     )
     # if there is a flyby for body k, then there must be a first flyby for k.
     seq_model.z_bigm_x = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_kt[k, :])
-        >= pyo.quicksum(model.x_kth[k, ...]),
+        rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :])
+        >= pyo.quicksum(model.x_kih[k, ...]),
     )
     # if there are previous flybys at time i, i cannot be a first flyby
     seq_model.z_implies_not_y = pyo.Constraint(
-        seq_model.KT,
-        rule=lambda model, k, t: (
-            model.z_kt[k, t] <= 1 - pyo.quicksum(model.y_kij[k, t, :])
-            if t > 1
+        seq_model.KI,
+        rule=lambda model, k, i: (
+            model.z_ki[k, i] <= 1 - pyo.quicksum(model.y_kij[k, i, :])
+            if i > 1
             else pyo.Constraint.Feasible
         ),
     )
@@ -258,13 +256,13 @@ def grand_tour_vars_and_constrs(seq_model: pyo.ConcreteModel):
     seq_model.all_planets = pyo.Var(initialize=0, within=pyo.Binary)  # all planets indicator
     seq_model.count_p_bigm1 = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...])
-        <= 2 * model.T.at(-1) * model.planet_visited[k],
+        rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...])
+        <= 2 * model.I.at(-1) * model.planet_visited[k],
     )
     seq_model.count_p_bigm2 = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: pyo.quicksum(model.x_kth[k, ...]) - 1
-        >= 2 * model.T.at(-1) * (model.planet_visited[k] - 1),
+        rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) - 1
+        >= 2 * model.I.at(-1) * (model.planet_visited[k] - 1),
     )
     seq_model.all_planets_bigm1 = pyo.Constraint(
         rule=pyo.summation(seq_model.planet_visited) - seq_model.gt_p <= seq_model.all_planets * 20
@@ -289,11 +287,7 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: DVTable):
     seq_model.KIMJ = pyo.Set(initialize=dv_table.dvs.keys())
 
     # Delta-vs and tofs
-    # seq_model.tof_kimj = pyo.Param(
-    #     seq_model.KIMJ,
-    #     initialize=lambda model, k, i, m, j: dv_table.tofs[k, i, m, j],
-    #     within=pyo.PositiveReals,
-    # )
+
     seq_model.dv_kimj = pyo.Param(
         seq_model.KIMJ,
         initialize=lambda model, k, i, m, j: dv_table.dvs[k, i, m, j],
@@ -303,30 +297,6 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: DVTable):
     print("...create L_kimj arc indicator variables...")
     # bodies k and m, times i and j
     seq_model.L_kimj = pyo.Var(seq_model.KIMJ, within=pyo.Binary)
-
-    # print("...create L_ki** and L_**mj implication constraints...")
-    # # if x_kt* isn't 1, then there can't be an L_kt** or L_**kt
-    # seq_model.L_implies_x_nodes = pyo.Constraint(
-    #     seq_model.KIMJ,
-    #     rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * 2
-    #     <= pyo.quicksum(model.x_kth[k, i, h] + model.x_kth[m, j, h] for h in model.H),
-    # )
-
-    # print("...create L_kt** and L_**kt packing constraints...")
-    # # each k, t node can only have at most one start and end.
-    # seq_model.L_single_start = pyo.Constraint(
-    #     seq_model.KT, rule=lambda model, k, t: pyo.quicksum(model.L_kimj[k, t, ...]) <= 1
-    # )
-    # seq_model.L_single_end = pyo.Constraint(
-    #     seq_model.KT, rule=lambda model, k, t: 1 >= pyo.quicksum(model.L_kimj[..., k, t])
-    # )
-
-    # print("...create L_kimj positive dt constraints...")
-    # # if L_kimj is selected, it must have a positive delta-t
-    # seq_model.positive_dt = pyo.Constraint(
-    #     seq_model.KIMJ,
-    #     rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * model.tof_kimj[k, i, m, j] >= 0,
-    # )
 
     print("...create L_kimj partition constraints...")
     # must have lambert checks up to h_tot - 1
@@ -339,7 +309,7 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: DVTable):
     # if kimj aren't connected by h and h+1, it is not a valid lambert arc
     def h_arcs_expr(model, k, i, m, j, h):
         if h > 1:
-            term = model.x_kth[k, i, h - 1] + model.x_kth[m, j, h] <= 1 + model.L_kimj[k, i, m, j]
+            term = model.x_kih[k, i, h - 1] + model.x_kih[m, j, h] <= 1 + model.L_kimj[k, i, m, j]
         else:
             term = pyo.Constraint.Skip
         return term
@@ -359,23 +329,25 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: DVTable):
 def objective_fnc(seq_model: pyo.ConcreteModel):
     def obj_rule(model):
         ##### Objective Function and Scoring #####
-        print("...create (z_kt, y_kij, k_kth) -> S(r_kij) seasonal penalty terms...")
-        flyby_kt = {kt: model.z_kt[kt] for kt in model.KT}
+        print("...create (z_ki, y_kij, k_kih) -> S(r_kij) seasonal penalty terms...")
+        flyby_ki = {ki: model.z_ki[ki] for ki in model.KI}
 
         # subsequent flybys
         lin_term = 0
         for k, i, j in model.KIJ:
             lin_term += (
-                lin_dots_penalty(model.rdu_kt[k, i], model.rdu_kt[k, j]) * model.y_kij[k, i, j]
+                lin_dots_penalty(model.rdu_ki[k, i], model.rdu_ki[k, j]) * model.y_kij[k, i, j]
             )
             if j == i - 1:
-                flyby_kt[k, i] = lin_term
+                flyby_ki[k, i] = lin_term
                 lin_term = 0
 
         GT_bonus = 1.0 + 0.3 * model.all_planets
-        return GT_bonus * pyo.quicksum(
-            model.w_k[k] * flyby_kt[kt] for kt in model.KT
-        ) - pyo.summation(model.L_kimj, model.dv_kimj, index=model.KIMJ)
+        if seq_model.find_component("L_kimj"):
+            dv_penalty = -pyo.summation(model.L_kimj, model.dv_kimj, index=model.KIMJ) / 10
+        else:
+            dv_penalty = 0
+        return GT_bonus * pyo.quicksum(model.w_k[k] * flyby_ki[ki] for ki in model.KI) + dv_penalty
 
     seq_model.maximize_score = pyo.Objective(
         rule=obj_rule,
@@ -391,35 +363,36 @@ def first_arcs_constrs(
         seq_model.first_arcs = pyo.ConstraintList()
 
     for h, body in enumerate(body_list):
-        if isinstance(body[1], tuple):
-            seq_model.first_arcs.add(
-                pyo.quicksum(
-                    seq_model.x_kth[body[0], t, h + 1] for t in range(body[1][0], body[1][1] + 1)
+        if not isinstance(body, int):
+            if isinstance(body[1], tuple):
+                seq_model.first_arcs.add(
+                    pyo.quicksum(
+                        seq_model.x_kih[body[0], i, h + 1]
+                        for i in range(body[1][0], body[1][1] + 1)
+                    )
+                    == 1
                 )
-                == 1
-            )
-        elif isinstance(body, tuple):
-            seq_model.first_arcs.add(
-                pyo.quicksum(seq_model.x_kth[k, t, h + 1] for k in body for t in seq_model.T) == 1
-            )
-        elif body is None:
-            continue
+            elif isinstance(body, tuple):
+                seq_model.first_arcs.add(
+                    pyo.quicksum(seq_model.x_kih[k, i, h + 1] for k in body for i in seq_model.I)
+                    == 1
+                )
+            elif body is None:
+                continue
         else:
-            seq_model.first_arcs.add(pyo.quicksum(seq_model.x_kth[body, :, h + 1]) == 1)
+            seq_model.first_arcs.add(pyo.quicksum(seq_model.x_kih[body, :, h + 1]) == 1)
 
 
 @timer
-def nogood_cuts_constrs(
-    seq_model: pyo.ConcreteModel,
-):
+def nogood_cuts_constrs(seq_model: pyo.ConcreteModel, disallowed: None):
     if not seq_model.find_component("ng_cuts"):
         seq_model.ng_cuts = pyo.ConstraintList()
     expr = 0
-    for kth, v in seq_model.x_kth:
+    for kih, v in seq_model.x_kih:
         if pyo.value(v) < 0.5:
-            expr += seq_model.x_kth[kth]
+            expr += seq_model.x_kih[kih]
         else:
-            expr += 1 - seq_model.x_kth[kth]
+            expr += 1 - seq_model.x_kih[kih]
     seq_model.ng_cuts.add(expr >= 1)
 
 

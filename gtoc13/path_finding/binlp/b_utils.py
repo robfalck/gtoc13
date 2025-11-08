@@ -44,9 +44,9 @@ class IndexParams:
     flyby_limit: int
     gt_planets: int
     dv_limit: Optional[float]
-    first_arcs: Optional[
-        None | list[int | tuple[int, tuple[int, int]]]
-    ]  # integer of body, or body with bounds on timesteps
+    first_arcs: Optional[None | list[int | tuple[int, tuple[int, int]]]] = (
+        None  # integer of body, or body with bounds on timesteps
+    )
 
 
 @dataclass
@@ -88,6 +88,7 @@ class SolverParams:
     """
 
     solver_name: str
+    soln_gap: float = 0.0
     toconsole: bool = True
     write_nl: bool = False
     write_log: bool = False
@@ -96,9 +97,17 @@ class SolverParams:
 
 @dataclass
 class SequenceTarget:
-    order: int
-    body_state: tuple[str, tuple[int, int]]
+    place: int
+    name: str
+    ID: int
+    timestep: int
     year: float
+
+
+@dataclass
+class Segment:
+    timesteps: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    bodies: list[SequenceTarget]
 
 
 class Timer:

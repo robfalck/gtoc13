@@ -8,20 +8,10 @@ solution sequences based on number of iterations.
 
 """
 
-import pyomo.environ as pyo
 import logging
 from gtoc13 import bodies_data
-from b_utils import Timer, create_discrete_dataset, IndexParams, SolverParams
-from build_model import (
-    initialize_model,
-    x_vars_and_constrs,
-    y_vars_and_constrs,
-    z_vars_and_constrs,
-    grand_tour_vars_and_constrs,
-    objective_fnc,
-    first_arcs_constrs,
-)
-from solver_outputs import generate_iterative_solutions
+from b_utils import create_discrete_dataset, IndexParams, SolverParams
+from problems import run_basic_problem
 
 ############### EDIT CONFIG ###############
 debug = False
@@ -34,7 +24,7 @@ pidxs_params = IndexParams(
     seq_length=6,
     flyby_limit=3,
     gt_planets=7,
-    dtu_limit=3.0,
+    dv_limit=3.0,
     first_arcs=[(10, (1, 3)), 9, 8],
 )
 solv_params = SolverParams(
@@ -45,22 +35,4 @@ solv_params = SolverParams(
 if debug:
     logging.getLogger("pyomo").setLevel(logging.DEBUG)
 
-with Timer():
-    print(">>>>> WRITE PYOMO MODEL >>>>>\n")
-    with Timer():
-        S = initialize_model(index_params=pidxs_params, discrete_data=discrete_data)
-        x_vars_and_constrs(S)
-        y_vars_and_constrs(S)
-        z_vars_and_constrs(S)
-        grand_tour_vars_and_constrs(S)
-        objective_fnc(S)
-        print("...total model setup time...")
-
-    if pidxs_params.first_arcs:
-        print(">>>>> SET UP ASSUMED INITIAL ARCS CONSTRAINTS >>>>>\n")
-        first_arcs_constrs(S, pidxs_params.first_arcs)
-        print("<<<<< ASSUMED INITIAL ARCS ADDED <<<<<\n")
-    print("<<<<< MODEL SETUP COMPLETE <<<<<")
-
-    solns = generate_iterative_solutions(model=S, solver_params=solv_params)
-    print("...total time...")
+segment = run_basic_problem(pidxs_params, discrete_data, solv_params)
