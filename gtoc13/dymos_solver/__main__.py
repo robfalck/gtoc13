@@ -178,8 +178,19 @@ Examples:
 
         # Create solution file and plot
         print("\nCreating solution file...")
-        solution = create_solution(prob, plan.bodies)
+        solution, solution_file = create_solution(prob, plan.bodies)
         print("Solution file and plot created successfully.")
+
+        # Save the mission plan with the same base name
+        plan_file = Path(solution_file).with_suffix('.pln')
+
+        # Update the plan with optimized flyby times
+        plan.flyby_times = flyby_times_opt
+        plan.t0 = t0_opt
+
+        # Save the updated plan
+        plan.save(plan_file)
+        print(f"Mission plan saved to {plan_file}")
 
     except Exception as e:
         print(f"\nError during optimization: {e}", file=sys.stderr)

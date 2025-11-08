@@ -423,7 +423,7 @@ class MissionPlan(BaseModel):
             Default objectives
         """
         return {
-            'E_end': Objective(),
+            'obj': Objective(),
         }
 
     def get_design_variables_with_defaults(self) -> Dict[str, DesignVariable]:
@@ -521,7 +521,12 @@ class MissionPlan(BaseModel):
         prob : om.Problem
             The solved OpenMDAO problem
         """
-        prob, phase = get_dymos_solver_problem(self.bodies, num_nodes=num_nodes)
+        # Enable warm-start if we have a solution guess for better convergence
+        warm_start = self.guess_solution is not None
+        if warm_start:
+            print("Enabling IPOPT warm-start settings for solution guess")
+
+        prob, phase = get_dymos_solver_problem(self.bodies, num_nodes=num_nodes, warm_start=warm_start)
 
         # Add design variables with defaults
         for var_name, dv in self.get_design_variables_with_defaults().items():
@@ -658,50 +663,96 @@ class MissionPlan(BaseModel):
                 v_final = []
                 u_n_vals = []
 
-                # Use solution guess for the first n_guess_arcs
-                for i in range(n_guess_arcs):
-                    arc = propagated_arcs[i]
-                    # Get first and last state points
-                    first_pt = arc.state_points[0]
-                    last_pt = arc.state_points[-1]
+                # Extract all state points from solution for proper interpolation
+                # We need to build arrays of shape (num_time_points, N, 3)
+                # where num_time_points is the number of state points in each arc (should be same for all)
 
-                    r_initial.append(list(first_pt.position))
-                    r_final.append(list(last_pt.position))
-                    v_initial.append(list(first_pt.velocity))
-                    v_final.append(list(last_pt.velocity))
+                # First, check if all arcs have the same number of state points
+                num_pts_per_arc = [len(arc.state_points) for arc in propagated_arcs[:n_guess_arcs]]
+                if len(set(num_pts_per_arc)) == 1:
+                    # All arcs have same number of points - we can use the full solution
+                    num_time_pts = num_pts_per_arc[0]
 
-                    # Extract control vectors for this arc
-                    u_n_vals.append(list(first_pt.control))
+                    # Build arrays: (num_time_pts, N, 3) for positions and velocities
+                    # and corresponding time array
+                    r_guess = np.zeros((num_time_pts, N, 3))
+                    v_guess = np.zeros((num_time_pts, N, 3))
+                    u_n_guess = np.zeros((num_time_pts, N, 3))
+                    t_guess = np.zeros((num_time_pts, N))
 
-                # Use default guess for the remaining arcs
-                if n_guess_arcs < N:
-                    print(f"Using default guess for remaining {N - n_guess_arcs} arcs")
+                    # Fill in data from solution for first n_guess_arcs
+                    for i in range(n_guess_arcs):
+                        arc = propagated_arcs[i]
+                        for j, pt in enumerate(arc.state_points):
+                            r_guess[j, i, :] = pt.position
+                            v_guess[j, i, :] = pt.velocity
+                            u_n_guess[j, i, :] = pt.control
+                            t_guess[j, i] = pt.epoch
+
+                    # Fill in interpolated data for remaining arcs
                     for i in range(n_guess_arcs, N):
                         body_id = self.bodies[i]
                         t_flyby_s = flyby_times_s[i]
-
-                        # Get body state at flyby time
                         r_body, v_body = bodies_data[body_id].get_state(t_flyby_s)
 
-                        r_initial.append(r_body)
-                        r_final.append(r_body)
-                        v_initial.append(v_body)
-                        v_final.append(v_body)
+                        # Just use same value at all time points (will be linearly interpolated by dymos)
+                        for j in range(num_time_pts):
+                            r_guess[j, i, :] = r_body
+                            v_guess[j, i, :] = v_body
+                            u_n_guess[j, i, :] = [0.0, 0.0, 0.0]
+                            t_guess[j, i] = t_flyby_s
 
-                        # Default control (ballistic)
-                        u_n_vals.append([0.0, 0.0, 0.0])
+                    use_detailed_guess = True
+                else:
+                    # Arc lengths don't match - fall back to simple endpoint guess
+                    print(f"Warning: Arcs have different numbers of state points: {num_pts_per_arc}")
+                    print(f"Falling back to endpoint guess")
+                    use_detailed_guess = False
+
+                    # Build simple endpoint guess
+                    for i in range(n_guess_arcs):
+                        arc = propagated_arcs[i]
+                        r_initial.append(list(arc.state_points[0].position))
+                        r_final.append(list(arc.state_points[-1].position))
+                        v_initial.append(list(arc.state_points[0].velocity))
+                        v_final.append(list(arc.state_points[-1].velocity))
+                        u_n_vals.append(list(arc.state_points[0].control))
 
                 # Set state values for the phase
-                phase.set_state_val('r', vals=[r_initial, r_final], units='km')
-                phase.set_state_val('v', vals=[v_initial, v_final], units='km/s')
+                if use_detailed_guess:
+                    # Use the detailed guess with all time points
+                    # Average times across arcs (they should be similar)
+                    t_avg = np.mean(t_guess, axis=1)
 
-                # Set control values
-                u_n = np.array(u_n_vals)
-                if phase.control_options['u_n']['opt']:
-                    # If controls are optimized, set the default controls to [1,0,0]
-                    for i in range(n_guess_arcs, N):
-                        u_n[i, 0] = 1.0
-                phase.set_control_val('u_n', [u_n, u_n])
+                    phase.set_state_val('r', vals=r_guess, time_vals=t_avg, units='km')
+                    phase.set_state_val('v', vals=v_guess, time_vals=t_avg, units='km/s')
+                    phase.set_control_val('u_n', vals=u_n_guess, time_vals=t_avg, units='unitless')
+
+                    print(f"Set detailed initial guess with {num_time_pts} time points per arc")
+                else:
+                    # Use endpoint guess - need to finish building it for remaining arcs
+                    if n_guess_arcs < N and not use_detailed_guess:
+                        print(f"Using default guess for remaining {N - n_guess_arcs} arcs")
+                        for i in range(n_guess_arcs, N):
+                            body_id = self.bodies[i]
+                            t_flyby_s = flyby_times_s[i]
+                            r_body, v_body = bodies_data[body_id].get_state(t_flyby_s)
+
+                            r_initial.append(r_body)
+                            r_final.append(r_body)
+                            v_initial.append(v_body)
+                            v_final.append(v_body)
+                            u_n_vals.append([0.0, 0.0, 0.0])
+
+                    # Set with endpoint interpolation
+                    phase.set_state_val('r', vals=[r_initial, r_final], units='km')
+                    phase.set_state_val('v', vals=[v_initial, v_final], units='km/s')
+
+                    u_n = np.array(u_n_vals)
+                    if phase.control_options['u_n']['opt']:
+                        for i in range(n_guess_arcs, N):
+                            u_n[i, 0] = 1.0
+                    phase.set_control_val('u_n', [u_n, u_n])
             else:
                 print(f"Warning: Number of propagated arcs ({n_guess_arcs}) is incompatible with "
                       f"number of bodies ({N}). Using default guess.")

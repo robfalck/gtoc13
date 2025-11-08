@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -108,7 +109,6 @@ def create_solution(prob, bodies):
                               comments=[])
 
     # Find the next available solution filename
-    from pathlib import Path
     solutions_dir = Path(__file__).parent.parent.parent / 'solutions'
     solutions_dir.mkdir(exist_ok=True)
 
@@ -124,10 +124,10 @@ def create_solution(prob, bodies):
     plot_file = solutions_dir / f'dymos_solution_{index}.png'
     solution.plot(show_bodies=True, save_path=plot_file)
 
-    return solution
+    return solution, solution_file
 
 
-def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20) -> om.Problem:
+def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20, warm_start=False) -> om.Problem:
     """
     Parameters
     ----------
@@ -135,6 +135,9 @@ def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20) -> om.Problem:
         The bodies that make up the solution, in order of visit.
     num_nodes : int
         The number of nodes to be used in each trajectory arc.
+    warm_start : bool
+        If True, enable IPOPT warm-start settings for faster convergence when
+        starting from a good initial guess.
 
     Returns
     -------
@@ -178,7 +181,7 @@ def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20) -> om.Problem:
 
     prob.model.add_subsystem('energy_comp', EnergyComp(),
                              promotes_inputs=['v_end', 'r_end'],
-                             promotes_outputs=['E_end'])
+                             promotes_outputs=['E_end', 'obj'])
     prob.model.connect('event_pos', 'r_end', src_indices=om.slicer[-1, ...])
 
 
@@ -190,8 +193,17 @@ def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20) -> om.Problem:
                     shape=(N, 3), fix_initial=False, fix_final=False,
                     targets=['v'], lower=-100, upper=100)
 
+    # Integrate the cosine of alpha. This is always positive in the optimal
+    # solution since cosine is constrained to be positive.
+    # We add this term to the nominal objective with a scale factor
+    # that makes it somewhat insignificant.
+    # This gives the optimizer a "preference" for a control angle
+    # when otherwise it would be unsure of how to point the sail
+    phase.add_state('int_cos_alpha', rate_source='cos_alpha', units='unitless',
+                    shape=(1,), fix_initial=True, fix_final=False)
+
     # Control: sail normal unit vector (ballistic = zero for Keplerian orbit)
-    phase.add_control('u_n', units='unitless', shape=(N, 3), opt=False,
+    phase.add_control('u_n', units='unitless', shape=(N, 3), opt=True,
                         val=np.ones((N, 3)), targets=['u_n'])
     if phase.control_options['u_n']['opt']:
         phase.add_path_constraint('u_n_norm', equals=1.0)
@@ -262,10 +274,10 @@ def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20) -> om.Problem:
     prob.driver.opt_settings['tol'] = 1.0E-6
 
     # Gradient-based autoscaling
-    prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'
+    # prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'
 
     # Step-size selection
-    prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
+    # prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
 
     # This following block allows IPOPT to finish if it has a feasible but
     # not optimal solution for several iterations in a row.
@@ -278,7 +290,7 @@ def get_dymos_solver_problem(bodies: Sequence[int], num_nodes=20) -> om.Problem:
     prob.driver.opt_settings['acceptable_iter'] = 5  # Accept after 5 consecutive "acceptable" iterations
 
     # How to initialize the constraint bounds of the interior point method
-    prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
+    # prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
 
     # How IPOPT changes its barrier parameter (mu) over time.
     # This problem seems to work much better with the default 'adaptive'
@@ -428,6 +440,16 @@ def solve(bodies: Sequence[int], dt: Sequence[float], t0=0.0, num_nodes=20) -> G
     prob.driver.declare_coloring()  # Take advantage of sparsity.
     prob.driver.opt_settings['print_level'] = 5
     prob.driver.opt_settings['tol'] = 1.0E-6
+
+    # Warm-start settings for faster convergence when starting from good initial guess
+    if warm_start:
+        prob.driver.opt_settings['warm_start_init_point'] = 'yes'
+        prob.driver.opt_settings['warm_start_bound_push'] = 1e-9
+        prob.driver.opt_settings['warm_start_bound_frac'] = 1e-9
+        prob.driver.opt_settings['warm_start_slack_bound_push'] = 1e-9
+        prob.driver.opt_settings['warm_start_slack_bound_frac'] = 1e-9
+        prob.driver.opt_settings['warm_start_mult_bound_push'] = 1e-9
+        prob.driver.opt_settings['mu_init'] = 1e-4
 
     # Gradient-based autoscaling
     prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'

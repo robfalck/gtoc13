@@ -187,6 +187,15 @@ Warning: Solution has more bodies (3) than plan (2). Ignoring solution.
    - Solution quality
    - Optimizer stability
 
+5. **Automatic IPOPT Warm-Start**: When a solution guess is detected, the system automatically enables IPOPT warm-start settings for faster convergence:
+   - `warm_start_init_point = 'yes'`
+   - `warm_start_bound_push = 1e-9`
+   - `warm_start_bound_frac = 1e-9`
+   - `warm_start_slack_bound_push = 1e-9`
+   - `warm_start_slack_bound_frac = 1e-9`
+   - `warm_start_mult_bound_push = 1e-9`
+   - `mu_init = 1e-4`
+
 ## Command Line Interface
 
 The dymos_solver CLI automatically uses solution guess when loading plans:
@@ -197,8 +206,15 @@ python -m gtoc13.dymos_solver --plan solutions/mission.pln --num-nodes 20
 
 # The output will show if a guess was loaded:
 # "Found solution file: solutions/mission.txt"
+# "Enabling IPOPT warm-start settings for solution guess"
 # "Using guess_solution for initial guess"
 # "Using solution guess for first N of M arcs"
+# "Set detailed initial guess with 20 time points per arc"
+
+# After optimization, three files are created with the same base name:
+# - dymos_solution_N.txt (solution file)
+# - dymos_solution_N.png (trajectory plot)
+# - dymos_solution_N.pln (mission plan with optimized times)
 ```
 
 ## Programmatic Usage
