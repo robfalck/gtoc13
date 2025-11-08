@@ -1,10 +1,24 @@
-import numpy as np
-import time
-from typing import Optional
+"""
+Might have DU and TU unit errors?
+
+"""
+
 from dataclasses import dataclass, field
+from typing import Optional
+from pathlib import Path
+import time
 import functools
-from gtoc13 import YEAR, SPTU, KMPDU
 from tqdm import tqdm
+
+import numpy as np
+from numpy.linalg import norm
+import pykep as pk
+
+import plotly
+import plotly.graph_objects as go
+
+from gtoc13 import YPTU, bodies_data
+
 
 np.set_printoptions(legacy="1.25")
 
@@ -19,6 +33,7 @@ class IndexParams:
     seq_length : target number of bodies
     flyby_limit : max number of scientific flybys that will count towards scoring
     gt_planets : number of unique planets (large) needed for the grand tour bonus
+    dv_limit: delta-v limit in km/s
     first_arcs : list of initial planets and timestep index bounds to pre-constraint the model
 
     """
@@ -28,13 +43,15 @@ class IndexParams:
     seq_length: int
     flyby_limit: int
     gt_planets: int
+    dv_limit: Optional[float]
     first_arcs: Optional[
-        list[int | tuple[int, list[int, int]]]
+        None | list[int | tuple[int, tuple[int, int]]]
     ]  # integer of body, or body with bounds on timesteps
 
 
 @dataclass
 class DisBody:
+    name: str
     weight: float
     r_du: dict = field(
         default_factory=lambda: {
@@ -50,17 +67,11 @@ class DisBody:
 
 
 @dataclass
-class DiscreteDict:
-    bodies: dict = field(
-        default_factory=lambda: {
-            1: DisBody,
-        }
-    )
-    dv_table: dict = field(
-        default_factory=lambda: {
-            tuple[int, int, int, int]: {"tof": float, "dv1": float, "dv2": float}
-        }
-    )  # {kimj: {tof: float, dv1: float, dv2: float}
+class DVTable:
+    tofs: dict = field(
+        default_factory=lambda: {tuple[int, int, int, int]: float}
+    )  # {kimj: {tof: float, dv: float}
+    dvs: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
 
 
 @dataclass
@@ -135,26 +146,134 @@ def lin_dots_penalty(r_i: np.array, r_j: np.array) -> np.float32:
 @timer
 def create_discrete_dataset(
     Yo: float, Yf: float, bodies_data: dict, perYear: int = 2
-) -> tuple[DiscreteDict, list[int], int]:
-    To = Yo * YEAR
-    Tf = Yf * YEAR  # years in seconds
-    num = int(np.ceil((Tf - To) / (YEAR / perYear)))
-
+) -> tuple[dict, list[int], int, np.ndarray]:
+    To = float(Yo / YPTU)
+    Tf = float(Yf / YPTU)  # years per TU
+    num = int((Yf - Yo) * perYear)
+    timesteps = np.linspace(To, Tf, num)
     ## Generate position tables for just the bodies
-    print("...discretizing body data...")
-    with Timer():
-        dis_ephm = DiscreteDict()
-        k_body = []
-        for b_idx, body in tqdm(bodies_data.items()):
-            if body.is_planet() or body.name == "Yandi":
-                k_body.append(b_idx)
-                timestep = np.linspace(To, Tf, num) / SPTU
-                dis_ephm.bodies[b_idx] = DisBody(
-                    weight=body.weight,
-                    r_du=np.array([body.get_state(timestep[idx]).r / KMPDU for idx in range(num)]),
-                    v_dtu=np.array(
-                        [body.get_state(timestep[idx]).v * SPTU / KMPDU for idx in range(num)]
-                    ),
-                    t_tu=timestep,
-                )
-    return dis_ephm, k_body, num
+    dis_ephm = dict()
+    k_body = []
+    for b_idx, body in tqdm(bodies_data.items()):
+        if body.is_planet() or body.name == "Yandi":
+            k_body.append(b_idx)
+            dis_ephm[b_idx] = DisBody(
+                name=body.name,
+                weight=body.weight,
+                r_du=np.array(
+                    [
+                        body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
+                        for idx in range(num)
+                    ]
+                ),
+                t_tu=timesteps,
+            )
+    return dis_ephm, k_body, num, timesteps
+
+
+def min_dv_lam(
+    k: int, ti: float, m: int, tof: float, debug: bool = False
+) -> tuple[pk.lambert_problem, pk.lambert_problem]:
+    tj = tof + ti
+    state_ki = bodies_data[k].get_state(ti, time_units="TU", distance_units="DU")
+    state_mj = bodies_data[m].get_state(tj, time_units="TU", distance_units="DU")
+    r_ki, v_ki = state_ki
+    r_mj, v_mj = state_mj
+    if debug:
+        print(tof, state_ki)
+
+    cw = pk.lambert_problem(
+        r1=np.array(r_ki, dtype=np.float64),
+        r2=np.array(r_mj, dtype=np.float64),
+        tof=np.float64(tof),
+        cw=True,
+        max_revs=0,
+    )
+    ccw = pk.lambert_problem(
+        r1=np.array(r_ki, dtype=np.float64),
+        r2=np.array(r_mj, dtype=np.float64),
+        tof=np.float64(tof),
+        cw=False,
+        max_revs=0,
+    )
+    dvs_cw = norm(cw.get_v1()[0] - np.array(v_ki)) + norm(cw.get_v2()[0] - np.array(v_mj))
+    dvs_ccw = norm(ccw.get_v1()[0] - np.array(v_ki)) + norm(ccw.get_v2()[0] - np.array(v_mj))
+    min_dv = min(dvs_cw, dvs_ccw)
+    return min_dv
+
+
+@timer
+def build_dv_table(body_list: list[int], timesteps: np.ndarray):
+    tof_dict = {}
+    dv_dict = {}
+    for kimj in tqdm(
+        [
+            (k, i, m, j)
+            for k in body_list
+            for i in range(len(timesteps))
+            for m in body_list
+            for j in range(len(timesteps))
+            if (k != m and i != j)
+        ]
+    ):
+        k, i, m, j = kimj
+        tof = timesteps[j] - timesteps[i]
+        if tof >= 0:
+            dv_dict[(k, i + 1, m, j + 1)] = min_dv_lam(k, timesteps[i], m, tof)
+            tof_dict[(k, i + 1, m, j + 1)] = tof
+    dv_table = DVTable(tofs=tof_dict, dvs=dv_dict)
+    return dv_table
+
+
+def plot_porkchop(
+    body1: int,
+    body2: int,
+    t_dep: np.ndarray,
+    tof: np.ndarray,
+    dvs: np.ndarray,
+    dv_limit: float,
+    show: bool = True,
+    years: bool = True,
+):
+    k_name = bodies_data[body1].name
+    m_name = bodies_data[body2].name
+    x_options = dict(title=f"depart from {k_name} at tu_i", tickmode="auto")
+    y_options = dict(title=f"arrive at {m_name} in delta-tu", tickmode="auto")
+    main_title = f"from {k_name} to {m_name}"
+
+    layout_options = dict(
+        autosize=False,
+        width=700,
+        height=700,
+        title=main_title,
+        xaxis=x_options,
+        yaxis=y_options,
+    )
+    max_val = np.min((dv_limit, np.max(dvs)))
+    contour_dict = dict(
+        start=0.0,
+        end=max_val,
+        size=max_val / 50,
+    )
+
+    if years:
+        t_dep *= YPTU
+        tof *= YPTU
+    fig = go.Figure(
+        layout=layout_options,
+        data=go.Contour(
+            x=t_dep,
+            y=tof,
+            z=dvs,
+            contours=contour_dict,
+            colorscale="dense",
+        ),
+    )
+    if show:
+        fig.show()
+    else:
+        output_path = Path.cwd() / "outputs"
+        output_path.mkdir(exist_ok=True)
+        plotly.offline.plot(
+            fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False
+        )

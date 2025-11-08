@@ -10,14 +10,14 @@ and run `conda install scip`.
 
 """
 
-from gtoc13 import DAY, SPTU
-from b_utils import timer, IndexParams, DiscreteDict, lin_dots_penalty
+from gtoc13 import DAY, SPTU, KMPDU
+from b_utils import timer, IndexParams, DVTable, lin_dots_penalty
 import pyomo.environ as pyo
 from math import factorial
 
 
 @timer
-def initialize_model(index_params: IndexParams, discrete_data: DiscreteDict) -> pyo.ConcreteModel:
+def initialize_model(index_params: IndexParams, discrete_data: dict) -> pyo.ConcreteModel:
     """
     Creates indices from the inputs for variables and constraints in the problem.
     Includes constant parameters to generate the matrix for the model.
@@ -31,7 +31,7 @@ def initialize_model(index_params: IndexParams, discrete_data: DiscreteDict) -> 
     Cartesian products of these indices are used for variable and constraint construction.
 
     """
-    bodies = discrete_data.bodies
+    bodies = discrete_data
     print(">>>>> INSTANTIATE PYOMO CONCRETE MODEL >>>>>\n")
     seq_model = pyo.ConcreteModel()  # ConcreteModel instantiates during construction
     seq_model.name = "SequenceSearch"
@@ -42,9 +42,15 @@ def initialize_model(index_params: IndexParams, discrete_data: DiscreteDict) -> 
     seq_model.w_k = pyo.Param(
         seq_model.K, initialize=lambda model, k: bodies[k].weight, within=pyo.PositiveReals
     )  # scoring weights
-    seq_model.Nk_limit = pyo.Param(initialize=index_params.flyby_limit)
+    seq_model.name_k = pyo.Param(
+        seq_model.K, initialize=lambda model, k: bodies[k].name, within=pyo.Any
+    )
+    seq_model.dv_limit_dtu = pyo.Param(
+        initialize=index_params.dv_limit * float(KMPDU / SPTU), within=pyo.PositiveReals
+    )
+    seq_model.Nk_limit = pyo.Param(initialize=index_params.flyby_limit, within=pyo.PositiveIntegers)
     seq_model.gt_p = pyo.Param(initialize=index_params.gt_planets)
-    seq_model.dt_tol = pyo.Param(initialize=(DAY / SPTU).tolist(), within=pyo.PositiveReals)
+    seq_model.dt_tol = pyo.Param(initialize=(DAY * 7 / SPTU).tolist(), within=pyo.PositiveReals)
 
     # Cartesian product sets
     seq_model.KT = pyo.Set(initialize=[(k, t) for k in seq_model.K for t in seq_model.T])
@@ -89,20 +95,20 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     print("...create x parition constraint...")
     # x partition constraint: selection of bodies must equal to h_tot
     seq_model.x_partition = pyo.Constraint(
-        rule=pyo.summation(seq_model.x_kth) <= seq_model.H.at(-1)
+        rule=pyo.summation(seq_model.x_kth) == seq_model.H.at(-1)
+    )
+
+    print("...create x_**h partition constraints...")
+    # for each h, there must only be one body at some time
+    seq_model.x_h_partition = pyo.Constraint(
+        seq_model.H,
+        rule=lambda model, h: pyo.quicksum(model.x_kth[..., h]) == 1,
     )
 
     print("...create x_kt* packing constraints...")
     # for each (k,t), it can only exist in one position at most
     seq_model.x_kt_packing = pyo.Constraint(
         seq_model.KT, rule=lambda model, k, t: pyo.quicksum(model.x_kth[k, t, :]) <= 1
-    )
-
-    print("...create x_**h partition constraints...")
-    # for each h, there must only be one body at some time
-    seq_model.x_h_packing = pyo.Constraint(
-        seq_model.H,
-        rule=lambda model, h: pyo.quicksum(model.x_kth[..., h]) <= 1,
     )
 
     print("...create x_k** max number of scientific flybys...")
@@ -270,7 +276,7 @@ def grand_tour_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
 
 @timer
-def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: dict):
+def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: DVTable):
     """
     L[k,i,m,j] : binary variable indicating a trajectory arc between bodies k, m at timesteps i, j
 
@@ -279,49 +285,48 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: dict):
     :param dv_table: Description
     :type dv_table: dict
     """
+    # KIMJ indices:
+    seq_model.KIMJ = pyo.Set(initialize=dv_table.dvs.keys())
+
     # Delta-vs and tofs
-    seq_model.tof_kimj = pyo.Param(
-        seq_model.KIMJ, initialize=lambda model, k, i, m, j: dv_table[k, i, m, j]["tof"]
-    )
-    seq_model.dv1_kimj = pyo.Param(
+    # seq_model.tof_kimj = pyo.Param(
+    #     seq_model.KIMJ,
+    #     initialize=lambda model, k, i, m, j: dv_table.tofs[k, i, m, j],
+    #     within=pyo.PositiveReals,
+    # )
+    seq_model.dv_kimj = pyo.Param(
         seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: dv_table[k, i, m, j]["dv1"],
-        within=pyo.Any,
+        initialize=lambda model, k, i, m, j: dv_table.dvs[k, i, m, j],
+        within=pyo.PositiveReals,
     )
-    seq_model.dv2_kimj = pyo.Param(
-        seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: dv_table[k, i, m, j]["dv1"],
-        within=pyo.Any,
-    )
+
     print("...create L_kimj arc indicator variables...")
     # bodies k and m, times i and j
     seq_model.L_kimj = pyo.Var(seq_model.KIMJ, within=pyo.Binary)
 
-    print("...create L_ki** and L_**mj implication constraints...")
-    # if x_kt* isn't 1, then there can't be an L_kt** or L_**kt
-    seq_model.L_implies_x_nodes = pyo.Constraint(
-        seq_model.KIMJ,
-        rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * 2
-        <= pyo.quicksum(model.x_kth[k, i, h] + model.x_kth[m, j, h] for h in model.H),
-    )
+    # print("...create L_ki** and L_**mj implication constraints...")
+    # # if x_kt* isn't 1, then there can't be an L_kt** or L_**kt
+    # seq_model.L_implies_x_nodes = pyo.Constraint(
+    #     seq_model.KIMJ,
+    #     rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * 2
+    #     <= pyo.quicksum(model.x_kth[k, i, h] + model.x_kth[m, j, h] for h in model.H),
+    # )
 
-    print("...create L_kt** and L_**kt packing constraints...")
-    # each k, t node can only have at most one start and end.
-    seq_model.L_single_start = pyo.Constraint(
-        seq_model.KT, rule=lambda model, k, t: pyo.quicksum(model.L_kimj[k, t, ...]) <= 1
-    )
-    seq_model.L_single_end = pyo.Constraint(
-        seq_model.KT, rule=lambda model, k, t: 1 >= pyo.quicksum(model.L_kimj[..., k, t])
-    )
+    # print("...create L_kt** and L_**kt packing constraints...")
+    # # each k, t node can only have at most one start and end.
+    # seq_model.L_single_start = pyo.Constraint(
+    #     seq_model.KT, rule=lambda model, k, t: pyo.quicksum(model.L_kimj[k, t, ...]) <= 1
+    # )
+    # seq_model.L_single_end = pyo.Constraint(
+    #     seq_model.KT, rule=lambda model, k, t: 1 >= pyo.quicksum(model.L_kimj[..., k, t])
+    # )
 
-    print("...create L_kimj positive dt constraints...")
-    # if L_kimj is selected, it must have a positive delta-t
-    seq_model.positive_dt = pyo.Constraint(
-        seq_model.KIMJ,
-        rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j]
-        * (model.tu_kt[m, j] - model.tu_kt[k, i])
-        >= 0,
-    )
+    # print("...create L_kimj positive dt constraints...")
+    # # if L_kimj is selected, it must have a positive delta-t
+    # seq_model.positive_dt = pyo.Constraint(
+    #     seq_model.KIMJ,
+    #     rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * model.tof_kimj[k, i, m, j] >= 0,
+    # )
 
     print("...create L_kimj partition constraints...")
     # must have lambert checks up to h_tot - 1
@@ -345,9 +350,8 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: dict):
     # if the lambert arc is used, it must not exceed the dv limits.
     seq_model.dv_limit = pyo.Constraint(
         seq_model.KIMJ,
-        rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j]
-        * (model.dv1_kimj[k, i, m, j] + model.dv2_kimj[k, i, m, j])
-        <= seq_model.dv_limit,
+        rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * model.dv_kimj[k, i, m, j]
+        <= seq_model.dv_limit_dtu,
     )
 
 
@@ -360,15 +364,18 @@ def objective_fnc(seq_model: pyo.ConcreteModel):
 
         # subsequent flybys
         lin_term = 0
-        for kij in model.KIJ:
-            k, i, j = kij
-            lin_term += lin_dots_penalty(model.rdu_kt[k, i], model.rdu_kt[k, j]) * model.y_kij[kij]
+        for k, i, j in model.KIJ:
+            lin_term += (
+                lin_dots_penalty(model.rdu_kt[k, i], model.rdu_kt[k, j]) * model.y_kij[k, i, j]
+            )
             if j == i - 1:
                 flyby_kt[k, i] = lin_term
                 lin_term = 0
 
         GT_bonus = 1.0 + 0.3 * model.all_planets
-        return GT_bonus * pyo.quicksum(model.w_k[k] * flyby_kt[kt] for kt in model.KT)
+        return GT_bonus * pyo.quicksum(
+            model.w_k[k] * flyby_kt[kt] for kt in model.KT
+        ) - pyo.summation(model.L_kimj, model.dv_kimj, index=model.KIMJ)
 
     seq_model.maximize_score = pyo.Objective(
         rule=obj_rule,
@@ -378,17 +385,43 @@ def objective_fnc(seq_model: pyo.ConcreteModel):
 
 @timer
 def first_arcs_constrs(
-    seq_model: pyo.ConcreteModel, body_list: list[int | tuple[int, tuple[int, int]] | None]
+    seq_model: pyo.ConcreteModel, body_list: list[int | tuple[int, tuple[int, int]] | tuple | None]
 ):
+    if not seq_model.find_component("first_arcs"):
+        seq_model.first_arcs = pyo.ConstraintList()
+
     for h, body in enumerate(body_list):
-        if isinstance(body, tuple):
+        if isinstance(body[1], tuple):
             seq_model.first_arcs.add(
                 pyo.quicksum(
                     seq_model.x_kth[body[0], t, h + 1] for t in range(body[1][0], body[1][1] + 1)
                 )
                 == 1
             )
+        elif isinstance(body, tuple):
+            seq_model.first_arcs.add(
+                pyo.quicksum(seq_model.x_kth[k, t, h + 1] for k in body for t in seq_model.T) == 1
+            )
         elif body is None:
             continue
         else:
             seq_model.first_arcs.add(pyo.quicksum(seq_model.x_kth[body, :, h + 1]) == 1)
+
+
+@timer
+def nogood_cuts_constrs(
+    seq_model: pyo.ConcreteModel,
+):
+    if not seq_model.find_component("ng_cuts"):
+        seq_model.ng_cuts = pyo.ConstraintList()
+    expr = 0
+    for kth, v in seq_model.x_kth:
+        if pyo.value(v) < 0.5:
+            expr += seq_model.x_kth[kth]
+        else:
+            expr += 1 - seq_model.x_kth[kth]
+    seq_model.ng_cuts.add(expr >= 1)
+
+
+def match_start_constrs(seq_model: pyo.ConcreteModel):
+    pass

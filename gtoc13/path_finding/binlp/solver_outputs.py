@@ -1,11 +1,12 @@
 from pyomo.opt import TerminationCondition, SolverFactory, SolverResults
 import pyomo.environ as pyo
-from gtoc13.path_finding.binlp.b_utils import SolverParams, SequenceTarget, timer
+from b_utils import SolverParams, SequenceTarget, timer
 from pathlib import Path
 from typing import Any
 from numpy import round
 from gtoc13 import YEAR, SPTU
 from pprint import pprint
+from build_model import nogood_cuts_constrs
 
 
 @timer
@@ -29,14 +30,14 @@ def run_solver(
 
 
 def print_solution(
-    model: pyo.ConcreteModel, results: SolverResults, bodies_data: dict, iter: int
+    model: pyo.ConcreteModel, results: SolverResults, iter: int
 ) -> list[tuple[int, tuple[str, tuple[int, int]], float]] | None:
     if results.solver.termination_condition == TerminationCondition.infeasible:
         print("Infeasible, sorry :(\n")
         sequence = None
     else:
         sequence = [
-            (h, (bodies_data[k].name, (k, t)), round((model.tu_kt[k, t] * SPTU / YEAR).tolist(), 3))
+            (h, (model.name_k[k], (k, t)), round((model.tu_kt[k, t] * SPTU / YEAR).tolist(), 3))
             for (k, t, h), v in model.x_kth.items()
             if pyo.value(v) > 0.5
         ]
@@ -51,7 +52,11 @@ def print_solution(
             )
             print("Lambert arcs (k, i) to (m, j):")
             lambert_arcs = [
-                [short_seq.index((k, i)) + 1, f"({k}, {i}) to ({m}, {j})"]
+                [
+                    short_seq.index((k, i)) + 1,
+                    f"({k}, {i}) to ({m}, {j})",
+                    f"dv_tot: {round(model.dv_kimj[k, i, m, j], 3)}",
+                ]
                 for (k, i, m, j), v in model.L_kimj.items()
                 if pyo.value(v) > 0.5
             ]
@@ -77,31 +82,20 @@ def print_solution(
 
 
 @timer
-def generate_solutions(
-    model: pyo.ConcreteModel, solver_params: SolverParams, bodies_data: dict
+def generate_iterative_solutions(
+    model: pyo.ConcreteModel, solver_params: SolverParams
 ) -> list[list[SequenceTarget]]:
     print(f">>>>> RUN SOLVER FOR {solver_params.solv_iter} ITERATIONS(S) <<<<<")
     for iter in range(solver_params.solv_iter):
         results, solver = run_solver(model=model, solver_params=solver_params, iter=iter + 1)
-        soln_seq = print_solution(
-            model=model, results=results, bodies_data=bodies_data, iter=iter + 1
-        )
+        soln_seq = print_solution(model=model, results=results, iter=iter + 1)
         soln_seqs = []
         if not soln_seq:
             break
         soln_seqs.append(soln_seq)
         if iter < solver_params.solv_iter - 2:
             ### create no-good cuts for multiple solutions of the same problem ###
-            if iter == 0:
-                model.ng_cuts = pyo.ConstraintList()
             print(f"...start no-good cuts for iteration {iter + 2}...")
-            expr = 0
-            for kth, v in model.x_kth:
-                if pyo.value(v) < 0.5:
-                    expr += model.x_kth[kth]
-                else:
-                    expr += 1 - model.x_kth[kth]
-            model.ng_cuts.add(expr >= 1)
-        else:
+            nogood_cuts_constrs(seq_model=model)
             print("<<<<< FINISHED RUNNING ALL ITERATIONS <<<<<")
     return soln_seqs

@@ -12,7 +12,7 @@ import pyomo.environ as pyo
 import logging
 from gtoc13 import bodies_data
 from b_utils import Timer, create_discrete_dataset, IndexParams, SolverParams
-from problem_builder import (
+from build_model import (
     initialize_model,
     x_vars_and_constrs,
     y_vars_and_constrs,
@@ -21,12 +21,12 @@ from problem_builder import (
     objective_fnc,
     first_arcs_constrs,
 )
-from solver_outputs import generate_solutions
+from solver_outputs import generate_iterative_solutions
 
 ############### EDIT CONFIG ###############
 debug = False
-input_dict = dict(Yo=1, Yf=15, perYear=1, bodies_data=bodies_data)
-discrete_data, k_body, num = create_discrete_dataset(**input_dict)
+input_dict = dict(Yo=1, Yf=8, perYear=1.5, bodies_data=bodies_data)
+discrete_data, k_body, num, __ = create_discrete_dataset(**input_dict)
 # prob_dict = dict(gt_smalls=13, dv_limit=2000)
 pidxs_params = IndexParams(
     bodies_ID=k_body,
@@ -34,6 +34,7 @@ pidxs_params = IndexParams(
     seq_length=6,
     flyby_limit=3,
     gt_planets=7,
+    dtu_limit=3.0,
     first_arcs=[(10, (1, 3)), 9, 8],
 )
 solv_params = SolverParams(
@@ -57,10 +58,9 @@ with Timer():
 
     if pidxs_params.first_arcs:
         print(">>>>> SET UP ASSUMED INITIAL ARCS CONSTRAINTS >>>>>\n")
-        S.first_arcs = pyo.ConstraintList()
         first_arcs_constrs(S, pidxs_params.first_arcs)
         print("<<<<< ASSUMED INITIAL ARCS ADDED <<<<<\n")
     print("<<<<< MODEL SETUP COMPLETE <<<<<")
 
-    solns = generate_solutions(model=S, solver_params=solv_params, bodies_data=bodies_data)
+    solns = generate_iterative_solutions(model=S, solver_params=solv_params)
     print("...total time...")
