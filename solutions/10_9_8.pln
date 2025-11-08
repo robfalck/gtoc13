@@ -1,0 +1,18 @@
+{
+  "bodies": [
+    10,
+    9,
+    8
+  ],
+  "flyby_times": [
+    98.16,
+    141.33,
+    179.84
+  ],
+  "t0": 66.62,
+  "general_constraints": {},
+  "path_constraints": {},
+  "boundary_constraints": {},
+  "design_variables": {},
+  "objectives": {}
+}

@@ -189,6 +189,9 @@ class MissionPlan(BaseModel):
     objectives : Dict[str, Objective]
         Objectives for the optimization problem
         Keys are OpenMDAO variable names (e.g., 'E_end', 'times')
+    guess_solution : Optional[Any]
+        Solution object loaded from a .txt file for use as initial guess
+        Not saved to the .pln file (excluded from serialization)
     """
     bodies: List[int] = Field(..., description="List of integer body indices to visit")
     flyby_times: List[float] = Field(..., description="Guess of flyby time (years) for each body")
@@ -212,6 +215,11 @@ class MissionPlan(BaseModel):
     objectives: Dict[str, Objective] = Field(
         default_factory=dict,
         description="Objectives for the optimization problem"
+    )
+    guess_solution: Optional[Any] = Field(
+        default=None,
+        exclude=True,
+        description="Solution object for initial guess (not saved to file)"
     )
 
     @field_validator('t0')
@@ -287,6 +295,10 @@ class MissionPlan(BaseModel):
         """
         Load a mission plan from a .pln file.
 
+        Also attempts to load a solution file with the same name (but .txt extension)
+        for use as an initial guess. If found, validates that the body sequence matches
+        and uses the flyby times from the solution.
+
         Parameters
         ----------
         filepath : str | Path
@@ -297,9 +309,60 @@ class MissionPlan(BaseModel):
         MissionPlan
             The loaded mission plan instance.
         """
+        from gtoc13.solution import GTOC13Solution, FlybyArc
+        from gtoc13.constants import YEAR
+
         filepath = Path(filepath)
         with open(filepath, 'r') as f:
-            return cls.model_validate_json(f.read())
+            plan = cls.model_validate_json(f.read())
+
+        # Try to load a solution file with the same name
+        solution_path = filepath.with_suffix('.txt')
+        if solution_path.exists():
+            try:
+                print(f"Found solution file: {solution_path}")
+                solution = GTOC13Solution.from_file(solution_path)
+
+                # Extract flyby arcs to get bodies and times
+                flyby_arcs = [arc for arc in solution.arcs if isinstance(arc, FlybyArc)]
+
+                if len(flyby_arcs) > 0:
+                    solution_bodies = [arc.body_id for arc in flyby_arcs]
+
+                    # Check if solution bodies match the first N bodies in the plan
+                    n_solution_bodies = len(solution_bodies)
+                    n_plan_bodies = len(plan.bodies)
+
+                    if n_solution_bodies <= n_plan_bodies:
+                        # Check if first N bodies match
+                        if plan.bodies[:n_solution_bodies] == solution_bodies:
+                            # Partial or full match - update flyby times for matched arcs
+                            solution_flyby_times = [arc.epoch / YEAR for arc in flyby_arcs]
+
+                            # Update the flyby times for the matched bodies
+                            for i in range(n_solution_bodies):
+                                plan.flyby_times[i] = solution_flyby_times[i]
+
+                            print(f"Loaded solution with {n_solution_bodies} bodies matching first "
+                                  f"{n_solution_bodies} of {n_plan_bodies} plan bodies")
+                            print(f"Updated flyby times for bodies {solution_bodies}: {solution_flyby_times}")
+
+                            if n_solution_bodies < n_plan_bodies:
+                                print(f"Remaining {n_plan_bodies - n_solution_bodies} bodies will use default guess")
+
+                            # Store the solution for use as initial guess
+                            plan.guess_solution = solution
+                        else:
+                            print(f"Warning: Solution body sequence {solution_bodies} does not match "
+                                  f"first {n_solution_bodies} bodies of plan {plan.bodies[:n_solution_bodies]}. "
+                                  f"Ignoring solution.")
+                    else:
+                        print(f"Warning: Solution has more bodies ({n_solution_bodies}) than plan ({n_plan_bodies}). "
+                              f"Ignoring solution.")
+            except Exception as e:
+                print(f"Warning: Could not load solution file {solution_path}: {e}")
+
+        return plan
 
     @classmethod
     def get_default_design_variables(cls) -> Dict[str, DesignVariable]:
@@ -330,7 +393,7 @@ class MissionPlan(BaseModel):
             Default general constraints
         """
         return {
-            'flyby_comp.v_inf_mag_defect': GeneralConstraint(equals=0.0, units='DU/TU'),
+            'flyby_comp.v_inf_mag_defect': GeneralConstraint(equals=0.0, units='km/s'),
             'flyby_comp.h_p_defect': GeneralConstraint(upper=0.0, ref=1000.0),
             'times': GeneralConstraint(indices=[-1], upper=199.999, units='gtoc_year'),
         }
@@ -576,35 +639,124 @@ class MissionPlan(BaseModel):
         flyby_times_s = [t * YEAR for t in self.flyby_times]
 
         # Set initial guess for positions and velocities for each arc
-        r_initial = []
-        r_final = []
-        v_initial = []
-        v_final = []
+        if self.guess_solution is not None:
+            # Use the guess solution to extract states and controls
+            from gtoc13.solution import PropagatedArc, FlybyArc, ConicArc
+            print("Using guess_solution for initial guess")
 
-        for i, (body_id, t_flyby_s, dt_i) in enumerate(zip(self.bodies, flyby_times_s, dt)):
-            # Get body state at flyby time
-            r_body, v_body = bodies_data[body_id].get_state(t_flyby_s)
+            # Extract propagated arcs (the ones between flybys)
+            propagated_arcs = [arc for arc in self.guess_solution.arcs if isinstance(arc, PropagatedArc)]
+            n_guess_arcs = len(propagated_arcs)
 
-            r_initial.append(r_body)
-            r_final.append(r_body)
+            if n_guess_arcs > 0 and n_guess_arcs <= N:
+                # We have some guess data - use it for the first n_guess_arcs
+                print(f"Using solution guess for first {n_guess_arcs} of {N} arcs")
 
-            # Compute initial velocity estimate based on position change over dt
-            # For simplicity, use the body's velocity as the initial guess
-            v_initial.append(v_body)
-            v_final.append(v_body)
+                r_initial = []
+                r_final = []
+                v_initial = []
+                v_final = []
+                u_n_vals = []
 
-        # Set state values for the phase
-        phase.set_state_val('r', vals=[r_initial, r_final], units='km')
-        phase.set_state_val('v', vals=[v_initial, v_final], units='km/s')
+                # Use solution guess for the first n_guess_arcs
+                for i in range(n_guess_arcs):
+                    arc = propagated_arcs[i]
+                    # Get first and last state points
+                    first_pt = arc.state_points[0]
+                    last_pt = arc.state_points[-1]
+
+                    r_initial.append(list(first_pt.position))
+                    r_final.append(list(last_pt.position))
+                    v_initial.append(list(first_pt.velocity))
+                    v_final.append(list(last_pt.velocity))
+
+                    # Extract control vectors for this arc
+                    u_n_vals.append(list(first_pt.control))
+
+                # Use default guess for the remaining arcs
+                if n_guess_arcs < N:
+                    print(f"Using default guess for remaining {N - n_guess_arcs} arcs")
+                    for i in range(n_guess_arcs, N):
+                        body_id = self.bodies[i]
+                        t_flyby_s = flyby_times_s[i]
+
+                        # Get body state at flyby time
+                        r_body, v_body = bodies_data[body_id].get_state(t_flyby_s)
+
+                        r_initial.append(r_body)
+                        r_final.append(r_body)
+                        v_initial.append(v_body)
+                        v_final.append(v_body)
+
+                        # Default control (ballistic)
+                        u_n_vals.append([0.0, 0.0, 0.0])
+
+                # Set state values for the phase
+                phase.set_state_val('r', vals=[r_initial, r_final], units='km')
+                phase.set_state_val('v', vals=[v_initial, v_final], units='km/s')
+
+                # Set control values
+                u_n = np.array(u_n_vals)
+                if phase.control_options['u_n']['opt']:
+                    # If controls are optimized, set the default controls to [1,0,0]
+                    for i in range(n_guess_arcs, N):
+                        u_n[i, 0] = 1.0
+                phase.set_control_val('u_n', [u_n, u_n])
+            else:
+                print(f"Warning: Number of propagated arcs ({n_guess_arcs}) is incompatible with "
+                      f"number of bodies ({N}). Using default guess.")
+                # Fall back to default guess
+                r_initial = []
+                r_final = []
+                v_initial = []
+                v_final = []
+
+                for i, (body_id, t_flyby_s, dt_i) in enumerate(zip(self.bodies, flyby_times_s, dt)):
+                    # Get body state at flyby time
+                    r_body, v_body = bodies_data[body_id].get_state(t_flyby_s)
+
+                    r_initial.append(r_body)
+                    r_final.append(r_body)
+                    v_initial.append(v_body)
+                    v_final.append(v_body)
+
+                # Set state values for the phase
+                phase.set_state_val('r', vals=[r_initial, r_final], units='km')
+                phase.set_state_val('v', vals=[v_initial, v_final], units='km/s')
+
+                # Set control values (ballistic trajectory by default)
+                u_n = np.zeros((N, 3))
+                if phase.control_options['u_n']['opt']:
+                    u_n[:, 0] = 1.0
+                phase.set_control_val('u_n', [u_n, u_n])
+        else:
+            # No guess solution - use default guess
+            r_initial = []
+            r_final = []
+            v_initial = []
+            v_final = []
+
+            for i, (body_id, t_flyby_s, dt_i) in enumerate(zip(self.bodies, flyby_times_s, dt)):
+                # Get body state at flyby time
+                r_body, v_body = bodies_data[body_id].get_state(t_flyby_s)
+
+                r_initial.append(r_body)
+                r_final.append(r_body)
+                v_initial.append(v_body)
+                v_final.append(v_body)
+
+            # Set state values for the phase
+            phase.set_state_val('r', vals=[r_initial, r_final], units='km')
+            phase.set_state_val('v', vals=[v_initial, v_final], units='km/s')
+
+            # Set control values (ballistic trajectory by default)
+            u_n = np.zeros((N, 3))
+            if phase.control_options['u_n']['opt']:
+                u_n[:, 0] = 1.0
+            phase.set_control_val('u_n', [u_n, u_n])
 
         # Set time values (nondimensional time from -1 to 1)
         phase.set_time_val(initial=-1.0, duration=2.0, units='unitless')
-
-        # Set control values (ballistic trajectory by default)
-        u_n = np.zeros((N, 3))
-        if phase.control_options['u_n']['opt']:
-            u_n[:, 0] = 1.0
-        phase.set_control_val('u_n', [u_n, u_n])
 
         # Set parameter values (dt_dtau = dt/2)
         phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='gtoc_year')
