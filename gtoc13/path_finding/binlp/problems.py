@@ -15,24 +15,24 @@ from solver_outputs import generate_iterative_solutions
 @timer
 def run_basic_problem(index_params: IndexParams, discrete_data: dict, solver_params: SolverParams):
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")
-    segment = initialize_model(index_params=index_params, discrete_data=discrete_data)
-    x_vars_and_constrs(segment)
-    y_vars_and_constrs(segment)
-    z_vars_and_constrs(segment)
-    grand_tour_vars_and_constrs(segment)
-    objective_fnc(segment)
+    segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
+    x_vars_and_constrs(segment_model)
+    y_vars_and_constrs(segment_model)
+    z_vars_and_constrs(segment_model)
+    grand_tour_vars_and_constrs(segment_model)
+    objective_fnc(segment_model)
     print("...total segment setup time...")
 
     if index_params.first_arcs:
         print(">>>>> SET UP ASSUMED INITIAL ARCS CONSTRAINTS >>>>>\n")
-        first_arcs_constrs(segment, index_params.first_arcs)
+        first_arcs_constrs(segment_model, index_params.first_arcs)
         print("<<<<< ASSUMED INITIAL ARCS ADDED <<<<<\n")
     print("<<<<< MODEL SETUP COMPLETE <<<<<")
 
-    segments = generate_iterative_solutions(model=segment, solver_params=solver_params)
+    soln_segments = generate_iterative_solutions(model=segment_model, solver_params=solver_params)
     print("...total time...")
 
-    return segments
+    return soln_segments, segment_model
 
 
 @timer
@@ -40,22 +40,32 @@ def run_trajectory_problem(
     index_params: IndexParams, discrete_data: dict, dv_table: DVTable, solver_params: SolverParams
 ):
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")
-    segment = initialize_model(index_params=index_params, discrete_data=discrete_data)
-    x_vars_and_constrs(segment)
-    y_vars_and_constrs(segment)
-    z_vars_and_constrs(segment)
-    traj_arcs_vars_and_constrs(segment, dv_table)
-    grand_tour_vars_and_constrs(segment)
-    objective_fnc(segment)
+    segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
+    x_vars_and_constrs(segment_model)
+    y_vars_and_constrs(segment_model)
+    z_vars_and_constrs(segment_model)
+    traj_arcs_vars_and_constrs(segment_model, dv_table)
+    grand_tour_vars_and_constrs(segment_model)
+    objective_fnc(segment_model)
     print("...total segment setup time...")
 
     if index_params.first_arcs:
         print(">>>>> SET UP ASSUMED INITIAL ARCS CONSTRAINTS >>>>>\n")
-        first_arcs_constrs(segment, index_params.first_arcs)
+        first_arcs_constrs(segment_model, index_params.first_arcs)
         print("<<<<< ASSUMED INITIAL ARCS ADDED <<<<<\n")
     print("<<<<< MODEL SETUP COMPLETE <<<<<")
 
-    segments = generate_iterative_solutions(model=segment, solver_params=solver_params)
+    soln_segments = generate_iterative_solutions(model=segment_model, solver_params=solver_params)
     print("...total time...")
 
-    return segments
+    return soln_segments, segment_model
+
+
+def run_segment_problem():
+    # initialize the model with trajectory problem + extra?
+    # set up first arcs
+    # set up disallowed bodies/place
+    # run
+    # process, save the flybys, last item and timestep (not index), unique planets visited
+
+    pass

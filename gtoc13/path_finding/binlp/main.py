@@ -35,4 +35,4 @@ solv_params = SolverParams(
 if debug:
     logging.getLogger("pyomo").setLevel(logging.DEBUG)
 
-segment = run_basic_problem(pidxs_params, discrete_data, solv_params)
+seg, m = run_basic_problem(pidxs_params, discrete_data, solv_params)

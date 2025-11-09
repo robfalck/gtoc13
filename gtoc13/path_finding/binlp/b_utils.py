@@ -99,15 +99,9 @@ class SolverParams:
 class SequenceTarget:
     place: int
     name: str
-    ID: int
-    timestep: int
+    body_id: int
+    ts_idx: int
     year: float
-
-
-@dataclass
-class Segment:
-    timesteps: np.ndarray = field(default_factory=lambda: np.zeros(3))
-    bodies: list[SequenceTarget]
 
 
 class Timer:
