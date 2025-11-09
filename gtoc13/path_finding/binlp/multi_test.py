@@ -18,7 +18,7 @@ pidxs_params_1 = IndexParams(
     seq_length=5,
     flyby_limit=1,
     gt_planets=5,
-    dv_limit=30.0,  # km/s
+    dv_limit=100.0,  # km/s
     first_arcs=[(10, 9, 8, 7)],
 )
 solv_params = SolverParams(
