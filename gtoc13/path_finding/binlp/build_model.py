@@ -14,10 +14,14 @@ from gtoc13 import DAY, SPTU, KMPDU
 from b_utils import timer, IndexParams, DVTable, lin_dots_penalty
 import pyomo.environ as pyo
 from math import factorial
+from typing import Optional
+from numpy import float64
 
 
 @timer
-def initialize_model(index_params: IndexParams, discrete_data: dict) -> pyo.ConcreteModel:
+def initialize_model(
+    index_params: IndexParams, discrete_data: dict, flyby_history: Optional[dict] = None
+) -> pyo.ConcreteModel:
     """
     Creates indices from the inputs for variables and constraints in the problem.
     Includes constant parameters to generate the matrix for the model.
@@ -46,11 +50,13 @@ def initialize_model(index_params: IndexParams, discrete_data: dict) -> pyo.Conc
         seq_model.K, initialize=lambda model, k: bodies[k].name, within=pyo.Any
     )
     seq_model.dv_limit_dtu = pyo.Param(
-        initialize=index_params.dv_limit * float(KMPDU / SPTU), within=pyo.PositiveReals
+        initialize=index_params.dv_limit * float64(SPTU / KMPDU), within=pyo.PositiveReals
     )
     seq_model.Nk_limit = pyo.Param(initialize=index_params.flyby_limit, within=pyo.PositiveIntegers)
     seq_model.gt_p = pyo.Param(initialize=index_params.gt_planets)
-    seq_model.dt_tol = pyo.Param(initialize=(DAY * 7 / SPTU).tolist(), within=pyo.PositiveReals)
+    seq_model.dt_tol = pyo.Param(initialize=float(DAY * 7 / SPTU), within=pyo.PositiveReals)
+    if flyby_history:
+        seq_model.flyby_history = pyo.Param(seq_model.K, initialize=flyby_history)
 
     # Cartesian product sets
     seq_model.KI = pyo.Set(initialize=[(k, i) for k in seq_model.K for i in seq_model.I])
@@ -166,6 +172,9 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
     # Y Binary Indicator Variable: k-th body, i-th timestep, j-th previous timestep
     seq_model.y_kij = pyo.Var(seq_model.KIJ, within=pyo.Binary)
 
+    if seq_model.find_component("flyby_history"):
+        pass
+
     print("...create y_k** packing constraints...")
     # the amount of total previous flybys cannot be greater than (Nk_lim - 1)!
     seq_model.y_k_packing = pyo.Constraint(
@@ -208,6 +217,9 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
     print("...create z_ki indicator variable of first flyby at i for body k...")
     # Z Binary Indicator Variable: k-th body, i-th first flyby timestep
     seq_model.z_ki = pyo.Var(seq_model.KI, within=pyo.Binary)
+
+    if seq_model.find_component("flyby_history"):
+        pass
 
     print("...create z_k* packing constraints...")
     # at most only ONE first flyby for body k
@@ -252,6 +264,8 @@ def grand_tour_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     """
     print("...create grand tour bonus indicator variables Zp, Gp, Zc, Gc, and big-M constraints...")
+    if seq_model.find_component("flyby_history"):
+        pass
     seq_model.planet_visited = pyo.Var(seq_model.K, within=pyo.Binary)  # planets and yandi
     seq_model.all_planets = pyo.Var(initialize=0, within=pyo.Binary)  # all planets indicator
     seq_model.count_p_bigm1 = pyo.Constraint(
@@ -321,7 +335,7 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, dv_table: DVTable):
     seq_model.dv_limit = pyo.Constraint(
         seq_model.KIMJ,
         rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j] * model.dv_kimj[k, i, m, j]
-        <= seq_model.dv_limit_dtu,
+        <= model.dv_limit_dtu,
     )
 
 
@@ -384,7 +398,7 @@ def first_arcs_constrs(
 
 
 @timer
-def nogood_cuts_constrs(seq_model: pyo.ConcreteModel, disallowed: None):
+def nogood_cuts_constrs(seq_model: pyo.ConcreteModel):
     if not seq_model.find_component("ng_cuts"):
         seq_model.ng_cuts = pyo.ConstraintList()
     expr = 0
@@ -396,5 +410,16 @@ def nogood_cuts_constrs(seq_model: pyo.ConcreteModel, disallowed: None):
     seq_model.ng_cuts.add(expr >= 1)
 
 
-def match_start_constrs(seq_model: pyo.ConcreteModel):
-    pass
+@timer
+def disallow_end_position(seq_model: pyo.ConcreteModel, disallowed: list[int] | int):
+    if not seq_model.find_component("disallow"):
+        seq_model.disallow = pyo.ConstraintList()
+    if isinstance(disallowed, list):
+        seq_model.disallow.add(
+            pyo.quicksum(seq_model.x_kih[d_body, :, seq_model.H.at(-1)] for d_body in disallowed)
+            == 0
+        )
+    else:
+        seq_model.disallow.add(
+            pyo.quicksum(seq_model.x_kih[disallowed, :, seq_model.H.at(-1)]) == 0
+        )

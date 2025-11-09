@@ -1,3 +1,4 @@
+from numpy import ndarray
 from b_utils import timer, IndexParams, SolverParams, DVTable
 from build_model import (
     initialize_model,
@@ -8,8 +9,9 @@ from build_model import (
     grand_tour_vars_and_constrs,
     objective_fnc,
     first_arcs_constrs,
+    disallow_end_position,
 )
-from solver_outputs import generate_iterative_solutions
+from solver_outputs import generate_iterative_solutions, generate_segment
 
 
 @timer
@@ -37,7 +39,10 @@ def run_basic_problem(index_params: IndexParams, discrete_data: dict, solver_par
 
 @timer
 def run_trajectory_problem(
-    index_params: IndexParams, discrete_data: dict, dv_table: DVTable, solver_params: SolverParams
+    index_params: IndexParams,
+    discrete_data: dict,
+    solver_params: SolverParams,
+    dv_table: DVTable,
 ):
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")
     segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
@@ -61,11 +66,43 @@ def run_trajectory_problem(
     return soln_segments, segment_model
 
 
-def run_segment_problem():
-    # initialize the model with trajectory problem + extra?
-    # set up first arcs
-    # set up disallowed bodies/place
-    # run
-    # process, save the flybys, last item and timestep (not index), unique planets visited
+def run_segment_problem(
+    index_params: IndexParams,
+    discrete_data: dict,
+    solver_params: SolverParams,
+    dv_table: DVTable | None = None,
+    flyby_history: dict[int : list[ndarray]] | None = None,
+    disallowed: int | list[int] | None = None,
+):
+    """
+    - initialize the model with trajectory problem + extra?
+    - set up first arcs
+    - set up disallowed bodies/place
+    - run
+    - process, save the flybys, last item and timestep (not index), unique planets visited
+    """
+    print(">>>>> WRITE PYOMO MODEL >>>>>\n")
+    segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
+    x_vars_and_constrs(segment_model)
+    y_vars_and_constrs(segment_model)
+    z_vars_and_constrs(segment_model)
+    if dv_table:
+        traj_arcs_vars_and_constrs(segment_model, dv_table)
+    grand_tour_vars_and_constrs(segment_model)
+    objective_fnc(segment_model)
+    print("...total segment setup time...")
 
-    pass
+    if index_params.first_arcs:
+        print(">>>>> SET UP ASSUMED INITIAL ARCS CONSTRAINTS >>>>>\n")
+        first_arcs_constrs(segment_model, index_params.first_arcs)
+        print("<<<<< ASSUMED INITIAL ARCS ADDED <<<<<\n")
+
+    if disallowed:
+        print(">>>>> SET UP DISALLOWED END TARGETS CONSTRAINTS >>>>>\n")
+        disallow_end_position(segment_model, disallowed)
+        print("<<<<< DISALLOWED END TARGETS ADDED <<<<<\n")
+    print("<<<<< MODEL SETUP COMPLETE <<<<<")
+
+    sequence, flyby_history, model = generate_segment(segment_model, solver_params, flyby_history)
+    print("...total time...")
+    return sequence, flyby_history, model

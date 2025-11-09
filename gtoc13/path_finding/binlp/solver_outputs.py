@@ -4,17 +4,21 @@ from b_utils import SolverParams, SequenceTarget, timer
 from pathlib import Path
 from typing import Any
 from numpy import round
-from gtoc13 import YEAR, SPTU
+from gtoc13 import YEAR, SPTU, KMPDU
 from pprint import pprint
 from build_model import nogood_cuts_constrs
 from numpy import ndarray
 
 
 @timer
-def run_solver(model: pyo.ConcreteModel, solver_params: SolverParams) -> tuple[SolverResults, Any]:
+def run_solver(
+    model: pyo.ConcreteModel, solver_params: SolverParams, iter: int | None = None
+) -> tuple[SolverResults, Any]:
+    output_path = Path.cwd() / "outputs"
+    if not iter:
+        iter = ""
     if solver_params.write_nl:
         print("...writing .nl file for debugging...")
-        output_path = Path.cwd() / "outputs"
         Path.mkdir(output_path, exist_ok=True)
         model.write(output_path / f"sequence_{iter}.nl", format="nl")
     solver = SolverFactory(solver_params.solver_name, solver_io="nl")
@@ -63,7 +67,7 @@ def process_arcs(model: pyo.ConcreteModel, short_sequence: list[tuple[int, int]]
             [
                 short_sequence.index((k, i)) + 1,
                 f"({k}, {i}) to ({m}, {j})",
-                f"dv_tot: {round(model.dv_kimj[k, i, m, j], 3)}",
+                f"dv_tot: {round(model.dv_kimj[k, i, m, j] * KMPDU / SPTU, 3)}",
             ]
             for (k, i, m, j), v in model.L_kimj.items()
             if pyo.value(v) > 0.5
@@ -77,12 +81,18 @@ def process_arcs(model: pyo.ConcreteModel, short_sequence: list[tuple[int, int]]
     return lambert_arcs
 
 
-def process_flybys(model: pyo.ConcreteModel):
+def process_flybys(
+    model: pyo.ConcreteModel, flyby_history: dict[int : list[ndarray]] | None = None
+) -> dict[int : list[ndarray]]:
     print("Number of repeated flybys:", int(round(pyo.value(pyo.summation(model.y_kij)))), "\n")
     print("First flyby keys (k, i-th):")
     first_flybys = [ki for ki, v in model.z_ki.items() if pyo.value(v) > 0.5]
     pprint(sorted(first_flybys, key=lambda x: model.tu_ki[x]))
-    flyby_history = {k: [model.rdu_ki[k, i]] for (k, i) in first_flybys}
+    if flyby_history:
+        for k, i in first_flybys:
+            flyby_history[k].append(model.rdu_ki[k, i])
+    else:
+        flyby_history = {k: [model.rdu_ki[k, i]] for (k, i) in first_flybys}
     # flyby_history = {}
     if pyo.value(pyo.summation(model.y_kij) > 0):
         # all_dupe
@@ -106,7 +116,7 @@ def generate_iterative_solutions(
     print(f">>>>> RUN SOLVER FOR {solver_params.solv_iter} ITERATIONS(S) >>>>>")
     for iter in range(solver_params.solv_iter):
         print(f"...solving iteration {iter + 1}...")
-        results, solver = run_solver(model, solver_params)
+        results, solver = run_solver(model, solver_params, iter + 1)
         print(f"...iteration {iter + 1} solved...")
         if results.solver.termination_condition == TerminationCondition.infeasible:
             print("Infeasible, sorry :(\n")
@@ -130,7 +140,9 @@ def generate_iterative_solutions(
 
 @timer
 def generate_segment(
-    model: pyo.ConcreteModel, solver_params: SolverParams
+    model: pyo.ConcreteModel,
+    solver_params: SolverParams,
+    flyby_history: dict[int : list[ndarray]] | None = None,
 ) -> tuple[list[SequenceTarget], dict[int : list[ndarray]]]:
     results, solver = run_solver(model, solver_params)
     if results.solver.termination_condition == TerminationCondition.infeasible:
@@ -140,6 +152,6 @@ def generate_segment(
     else:
         sequence, short_seq = process_sequence(model)
         __ = process_arcs(model, short_seq)
-        flyby_history = process_flybys(model)
+        flyby_history = process_flybys(model, flyby_history)
 
     return sequence, flyby_history, model
