@@ -7,7 +7,7 @@ import math
 import numpy as np
 import pykep
 
-from gtoc13.bodies import bodies_data
+from gtoc13.bodies import bodies_data, INTERSTELLAR_BODY_ID
 from gtoc13.constants import DAY, MU_ALTAIRA
 from gtoc13.astrodynamics import patched_conic_flyby
 
@@ -38,6 +38,7 @@ class Encounter:
     dv_periapsis_vec: Optional[Vec3] = None  # periapsis impulse vector (km/s)
     dv_limit: Optional[float] = None  # pruning cap applied for this leg (km/s)
     J_total: float = 0.0  # cumulative score up to/including this encounter
+    seed_offset: Optional[Tuple[float, float]] = None  # (dy, dz) in AU for Interstellar fan-out
 
 
 State = Tuple[Encounter, ...]
@@ -146,7 +147,8 @@ def enumerate_lambert_solutions(
         solutions.append(entry)
 
     args = (r1.tolist(), r2.tolist(), tof, MU_ALTAIRA)
-    for cw_flag in (False,):
+    # Evaluate both short/long-way (cw False/True) branches to avoid missing solutions.
+    for cw_flag in (False, True):
         try:
             lp = pykep.lambert_problem(*args, cw=cw_flag, max_revs=max_revs)
         except Exception:
@@ -409,7 +411,17 @@ def resolve_lambert_leg(
     _, v_body_depart = body_state(parent.body, t_depart)
     _, v_body_arrival = body_state(getattr(proposal, "body"), t_arrival)
 
-    solutions = enumerate_lambert_solutions(parent.body, getattr(proposal, "body"), t_depart_sec, t_arrival_sec, max_revs=max_revs)
+    local_max_revs = max_revs
+    if parent.body == INTERSTELLAR_BODY_ID and parent.seed_offset is not None:
+        local_max_revs = 0
+
+    solutions = enumerate_lambert_solutions(
+        parent.body,
+        getattr(proposal, "body"),
+        t_depart_sec,
+        t_arrival_sec,
+        max_revs=local_max_revs,
+    )
     if not solutions:
         raise InfeasibleLeg("Lambert solver did not converge.")
 
@@ -421,6 +433,13 @@ def resolve_lambert_leg(
 
         vinf_out = float(np.linalg.norm(vinf_out_vec))
         vinf_in = float(np.linalg.norm(vinf_in_vec))
+        if vinf_out < 0.1:
+            continue
+        if parent.body == INTERSTELLAR_BODY_ID and parent.seed_offset is not None:
+            # Limit lateral (y/z) components of the outbound v∞ when departing from seeded Interstellar starts.
+            transverse_vinf = float(np.linalg.norm(vinf_out_vec[1:]))
+            if transverse_vinf >= 5.0:
+                continue
         vinf_cap = config.vinf_max
         if (
             not math.isfinite(vinf_out)

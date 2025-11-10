@@ -8,7 +8,7 @@ Example
 -------
 Run a small beam search that expands from Planet 1 with the "simple" score:
 
-    python -m gtoc13.path_finding.bs_lambert \\
+    python -m gtoc13.path_finding.beam.bs_lambert \\
         --beam-width 20 \\
         --max-depth 4 \\
         --start-body 1 \\
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gtoc13.bodies import bodies_data
+from gtoc13.bodies import bodies_data, INTERSTELLAR_BODY_ID
 from gtoc13.constants import DAY, YEAR, KMPAU
 from gtoc13.path_finding.beam.beam_search import BeamSearch
 from gtoc13.path_finding.beam.config import (
@@ -166,6 +166,12 @@ def run_cli() -> None:
         help="Parallel scoring backend (default: process).",
     )
     parser.add_argument(
+        "--interstellar-expansions",
+        type=int,
+        default=None,
+        help="Number of seed offsets to sample when start-body is Interstellar (defaults to beam width).",
+    )
+    parser.add_argument(
         "--score-mode",
         choices=("mission", "mission-raw", "medium", "simple", "depth"),
         default=DEFAULT_SCORE_MODE,
@@ -214,6 +220,12 @@ def run_cli() -> None:
     )
     args = parser.parse_args()
     tof_sample_count = max(1, int(args.tof_samples))
+    if args.interstellar_expansions is not None:
+        interstellar_expansions = int(args.interstellar_expansions)
+        if interstellar_expansions <= 0:
+            raise SystemExit("--interstellar-expansions must be a positive integer.")
+    else:
+        interstellar_expansions = None
     dv_mode = (args.dv_mode or DEFAULT_DV_MODE).lower()
     if dv_mode not in ("fixed", "dynamic"):
         raise SystemExit(f"Unsupported --dv-mode '{args.dv_mode}'. Expected 'fixed' or 'dynamic'.")
@@ -255,6 +267,13 @@ def run_cli() -> None:
         normalized_types = {"planet", "asteroid", "comet"}
 
     registry = build_body_registry(normalized_types, tof_sample_count)
+    if args.start_body == INTERSTELLAR_BODY_ID:
+        if interstellar_expansions is not None:
+            seed_count_value = interstellar_expansions
+        else:
+            seed_count_value = args.beam_width
+    else:
+        seed_count_value = None
     resume_data = None
     resume_meta: Optional[dict[str, Any]] = None
     resume_source: Optional[str] = None
@@ -359,11 +378,12 @@ def run_cli() -> None:
         if depth == 0:
             rp_min_au = None if config.rp_min_km is None else config.rp_min_km / KMPAU
             rp_str = "disabled" if rp_min_au is None else f"{rp_min_au:.3f} AU"
+            seed_str = seed_count_value if seed_count_value is not None else "n/a"
             summary = (
                 f"Beam search start: beam_width={args.beam_width}, max_depth={args.max_depth}, "
                 f"start_body={args.start_body}, start_epoch={start_epoch_years:.3f} yr, score_mode={args.score_mode}, "
                 f"dv_max={config.dv_max}, vinf_max={config.vinf_max}, tof_max={config.tof_max_days}, "
-                f"rp_min={rp_str}, "
+                f"rp_min={rp_str}, interstellar_seeds={seed_str}, "
                 f"tof_samples={registry.tof_sample_count}, body_types={','.join(sorted(normalized_types))}"
             )
             print(summary, flush=True)
@@ -380,6 +400,7 @@ def run_cli() -> None:
         registry,
         allow_repeat=not args.no_repeat,
         same_body_samples=registry.tof_sample_count,
+        seed_count=seed_count_value,
     )
     selected_score_fn = make_score_fn(config, registry, args.score_mode)
 
@@ -464,6 +485,7 @@ def run_cli() -> None:
             resume_rank=resume_rank_val,
             resume_index=resume_index_val,
             allow_repeat=not args.no_repeat,
+            interstellar_expansions=seed_count_value,
         )
         print(f"\nResults written to {output_path}")
 

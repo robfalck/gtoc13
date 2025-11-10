@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Hashable, Iterable, Optional, Sequence, Tuple
 
 import math
 import numpy as np
 
-from gtoc13.constants import MU_ALTAIRA
+from gtoc13.constants import DAY, KMPAU, MU_ALTAIRA, YEAR
+from gtoc13.bodies import INTERSTELLAR_BODY_ID
 
 from .config import BASE_SEMI_MAJOR_AXES, BodyRegistry, LambertConfig
 from .lambert import Encounter, InfeasibleLeg, State, resolve_lambert_leg
@@ -23,6 +24,8 @@ class Proposal:
 
     body: int  # candidate next target
     tof: float  # proposed time-of-flight (days)
+    seed_offset: Optional[Tuple[float, float]] = None  # (dy, dz) offsets in AU for Interstellar
+    is_seed: bool = False
 
 
 def _orbit_period_days(body_id: int) -> float:
@@ -39,6 +42,7 @@ def make_expand_fn(
     *,
     allow_repeat: bool = True,
     same_body_samples: Optional[int] = None,
+    seed_count: Optional[int] = None,
 ) -> Callable[[State], Iterable[Proposal]]:
     """Return a cheap proposal generator bound to the given configuration."""
 
@@ -48,6 +52,32 @@ def make_expand_fn(
         last_body = path[-1].body
         current_time = path[-1].t
         samples_same = same_body_samples if same_body_samples is not None else registry.tof_sample_count
+
+        if (
+            seed_count is not None
+            and seed_count > 0
+            and len(path) == 1
+            and last_body == INTERSTELLAR_BODY_ID
+            and getattr(path[-1], "seed_offset", None) is None
+        ):
+            desired = max(1, int(seed_count))
+            axis = 1
+            while axis * axis < desired:
+                axis += 1
+            if axis == 1:
+                grid_vals = np.array([0.0], dtype=float)
+            else:
+                grid_vals = np.linspace(-50.0, 50.0, axis, dtype=float)
+            offsets = [(float(y), float(z)) for y in grid_vals for z in grid_vals]
+            offsets.sort(key=lambda pair: (abs(pair[0]) + abs(pair[1]), pair[0], pair[1]))
+            for offset in offsets[:desired]:
+                yield Proposal(
+                    body=INTERSTELLAR_BODY_ID,
+                    tof=0.0,
+                    seed_offset=offset,
+                    is_seed=True,
+                )
+            return
 
         # Build a TOF grid that respects both the global sample budget and a per-body
         # angular resolution (≈1 deg of mean motion) so we avoid oversampling slow movers.
@@ -92,10 +122,14 @@ def make_expand_fn(
                 if grid is None:
                     continue
             else:
-                try:
-                    tmin, tmax = hohmann_bounds_for_bodies(last_body, tgt, registry)
-                except ValueError:
-                    continue
+                if last_body == INTERSTELLAR_BODY_ID:
+                    tmin = 5.0 * YEAR / DAY
+                    tmax = 100.0 * YEAR / DAY
+                else:
+                    try:
+                        tmin, tmax = hohmann_bounds_for_bodies(last_body, tgt, registry)
+                    except ValueError:
+                        continue
                 grid = _build_tof_grid(tgt, tmin, tmax, registry.tof_sample_count)
                 if grid is None:
                     continue
@@ -131,6 +165,15 @@ class BoundScoreFunction:
         if not path:
             return float("-inf"), path
         parent = path[-1]
+        if prop.is_seed:
+            offset = prop.seed_offset if prop.seed_offset is not None else (0.0, 0.0)
+            if parent.body != INTERSTELLAR_BODY_ID:
+                return float("-inf"), path
+            y_km = float(offset[0]) * KMPAU
+            z_km = float(offset[1]) * KMPAU
+            new_r = (parent.r[0], y_km, z_km)
+            updated_parent = replace(parent, r=new_r, seed_offset=offset)
+            return 0.0, path[:-1] + (updated_parent,)
         t1 = parent.t + prop.tof
         if self.config.tof_max_days is not None:
             if t1 > self.config.tof_max_days:
@@ -168,10 +211,21 @@ def key_fn(state: State) -> Hashable:
     origin = 0.0
     tof_bin = int(math.floor((last.t - origin) / bin_width))
     vinf = -1.0 if last.vinf_in is None else last.vinf_in
-    vinf_bin = int(round(vinf / 1.0))  # 1 km/s bins for hyperbolic excess magnitude
+    if vinf <= 0.0:
+        vinf_bin = -1
+    elif vinf < 1.0:
+        vinf_bin = 0
+    else:
+        ratio = math.log(vinf / 1.0) / math.log(1.1)
+        vinf_bin = 1 + int(math.floor(ratio))
     visited_bodies = tuple(sorted({enc.body for enc in state}))
     tail_bodies = tuple(enc.body for enc in state[-2:])
-    return (last.body, visited_bodies, tail_bodies, tof_bin, vinf_bin, bin_width)
+    offset = getattr(last, "seed_offset", None)
+    if offset is None:
+        offset_key = None
+    else:
+        offset_key = tuple(round(float(x), 6) for x in offset)
+    return (last.body, visited_bodies, tail_bodies, tof_bin, vinf_bin, bin_width, offset_key)
 
 
 __all__ = ["Proposal", "Vec3", "make_expand_fn", "make_score_fn", "key_fn", "BoundScoreFunction"]
