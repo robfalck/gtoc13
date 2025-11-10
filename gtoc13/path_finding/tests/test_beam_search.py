@@ -5,6 +5,10 @@ from unittest.mock import patch
 
 import numpy as np
 from numpy.testing import assert_allclose
+from dataclasses import replace
+
+from gtoc13.bodies import bodies_data, INTERSTELLAR_BODY_ID
+from gtoc13.constants import DAY, KMPAU, YEAR
 from gtoc13.path_finding import BeamSearch
 from gtoc13.path_finding.beam.config import (
     BodyRegistry,
@@ -18,6 +22,8 @@ from gtoc13.path_finding.beam.lambert import (
     ephemeris_position,
     LambertLegMeta,
     _requires_low_perihelion,
+    InfeasibleLeg,
+    resolve_lambert_leg,
 )
 from gtoc13.path_finding.beam.scoring import score_leg_mission, score_leg_mission_raw
 from gtoc13.path_finding.beam.pipeline import make_expand_fn, make_score_fn, key_fn
@@ -209,6 +215,309 @@ class TestKeyFn(unittest.TestCase):
         # Sanity-check that last body and visited set still match.
         self.assertEqual(key_a[0], key_b[0])
         self.assertEqual(key_a[1], key_b[1])
+
+    def test_vinf_percentage_bins(self):
+        def make_enc(vinf: float, t: float = 0.0) -> Encounter:
+            return Encounter(
+                body=1,
+                t=t,
+                r=(0.0, 0.0, 0.0),
+                vinf_in=vinf,
+                vinf_in_vec=None,
+                vinf_out=None,
+                vinf_out_vec=None,
+                flyby_valid=None,
+                flyby_altitude=None,
+                dv_periapsis=None,
+                dv_periapsis_vec=None,
+                dv_limit=None,
+                J_total=0.0,
+            )
+
+        key_low = key_fn((make_enc(0.5),))
+        key_low_b = key_fn((make_enc(0.9),))
+        self.assertEqual(key_low, key_low_b)
+
+        key_baseline = key_fn((make_enc(1.0),))
+        key_within_pct = key_fn((make_enc(1.05),))
+        self.assertEqual(key_baseline, key_within_pct)
+
+        key_outside_pct = key_fn((make_enc(1.3),))
+        self.assertNotEqual(key_baseline, key_outside_pct)
+
+        key_v10 = key_fn((make_enc(10.0),))
+        key_v12 = key_fn((make_enc(12.0),))
+        self.assertNotEqual(key_v10, key_v12)
+
+
+class TestInterstellarBody(unittest.TestCase):
+
+    def test_state_is_fixed(self):
+        interstellar = bodies_data[INTERSTELLAR_BODY_ID]
+        state_now = interstellar.get_state(0.0)
+        state_future = interstellar.get_state(12345.6)
+
+        r_expected = np.array([-200.0 * KMPAU, 0.0, 0.0], dtype=float)
+        v_expected = np.array([1.0, 0.0, 0.0], dtype=float)
+
+        # The Interstellar state is approximate because JAX defaults to float32 precision by default.
+        assert_allclose(np.asarray(state_now.r, dtype=float), r_expected, rtol=1e-8, atol=1e-3)
+        assert_allclose(np.asarray(state_now.v, dtype=float), v_expected, rtol=1e-8, atol=1e-6)
+        assert_allclose(np.asarray(state_future.r, dtype=float), r_expected, rtol=1e-8, atol=1e-3)
+        assert_allclose(np.asarray(state_future.v, dtype=float), v_expected, rtol=1e-8, atol=1e-6)
+
+        state_au = interstellar.get_state(0.0, distance_units="AU")
+        r_expected_au = np.array([-200.0, 0.0, 0.0], dtype=float)
+        v_expected_au = np.array([1.0 / KMPAU, 0.0, 0.0], dtype=float)
+        assert_allclose(np.asarray(state_au.r, dtype=float), r_expected_au, rtol=1e-7, atol=1e-9)
+        assert_allclose(np.asarray(state_au.v, dtype=float), v_expected_au, rtol=1e-7, atol=1e-12)
+
+    def test_expand_fn_uses_special_tof_bounds(self):
+        config = make_lambert_config(
+            dv_max=None,
+            vinf_max=None,
+            tof_max_days=None,
+            dv_mode="fixed",
+        )
+        registry = BodyRegistry(
+            body_ids=(1, 2),
+            semi_major_axes={
+                1: BASE_SEMI_MAJOR_AXES[1],
+                2: BASE_SEMI_MAJOR_AXES[2],
+            },
+            weights={
+                1: BASE_BODY_WEIGHTS[1],
+                2: BASE_BODY_WEIGHTS[2],
+            },
+            tof_sample_count=4,
+        )
+
+        interstellar_state = bodies_data[INTERSTELLAR_BODY_ID].get_state(0.0)
+        root = (
+            Encounter(
+                body=INTERSTELLAR_BODY_ID,
+                t=0.0,
+                r=tuple(float(x) for x in np.asarray(interstellar_state.r, dtype=float)),
+                vinf_in=None,
+                vinf_in_vec=None,
+                vinf_out=None,
+                vinf_out_vec=None,
+                flyby_valid=None,
+                flyby_altitude=None,
+                dv_periapsis=None,
+                dv_periapsis_vec=None,
+                dv_limit=None,
+                J_total=0.0,
+            ),
+        )
+        expand = make_expand_fn(config, registry)
+        proposals = list(expand(root))
+        self.assertTrue(proposals)
+        self.assertTrue(all(prop.body != INTERSTELLAR_BODY_ID for prop in proposals))
+
+        tof_values = [prop.tof for prop in proposals]
+        min_expected = 5.0 * YEAR / DAY
+        max_expected = 100.0 * YEAR / DAY
+
+        self.assertGreaterEqual(min(tof_values), min_expected)
+        self.assertLessEqual(max(tof_values), max_expected)
+
+        for body_id in (1, 2):
+            body_samples = [prop.tof for prop in proposals if prop.body == body_id]
+            self.assertEqual(len(body_samples), registry.tof_sample_count)
+
+    def test_seed_expansion_generates_offsets(self):
+        config = make_lambert_config(
+            dv_max=None,
+            vinf_max=None,
+            tof_max_days=None,
+            dv_mode="fixed",
+        )
+        registry = BodyRegistry(
+            body_ids=(1,),
+            semi_major_axes={1: BASE_SEMI_MAJOR_AXES[1]},
+            weights={1: BASE_BODY_WEIGHTS[1]},
+            tof_sample_count=3,
+        )
+        interstellar_state = bodies_data[INTERSTELLAR_BODY_ID].get_state(0.0)
+        root = (
+            Encounter(
+                body=INTERSTELLAR_BODY_ID,
+                t=0.0,
+                r=tuple(float(x) for x in np.asarray(interstellar_state.r, dtype=float)),
+                vinf_in=None,
+                vinf_in_vec=None,
+                vinf_out=None,
+                vinf_out_vec=None,
+                flyby_valid=None,
+                flyby_altitude=None,
+                dv_periapsis=None,
+                dv_periapsis_vec=None,
+                dv_limit=None,
+                J_total=0.0,
+            ),
+        )
+
+        expand = make_expand_fn(config, registry, seed_count=4)
+        seeds = list(expand(root))
+        self.assertEqual(len(seeds), 4)
+        self.assertTrue(all(prop.is_seed for prop in seeds))
+        offsets = {prop.seed_offset for prop in seeds}
+        self.assertEqual(len(offsets), 4)
+
+        score = make_score_fn(config, registry, mode="medium")
+        inc, seeded_state = score(root, seeds[0])
+        self.assertEqual(inc, 0.0)
+        self.assertEqual(len(seeded_state), 1)
+        self.assertEqual(seeded_state[-1].seed_offset, seeds[0].seed_offset)
+
+        post_seed_props = list(expand(seeded_state))
+        self.assertTrue(post_seed_props)
+        self.assertTrue(all(not prop.is_seed for prop in post_seed_props))
+
+    def test_key_fn_distinguishes_seed_offsets(self):
+        base_state = Encounter(
+            body=INTERSTELLAR_BODY_ID,
+            t=0.0,
+            r=(0.0, 0.0, 0.0),
+            vinf_in=None,
+            vinf_in_vec=None,
+            vinf_out=None,
+            vinf_out_vec=None,
+            flyby_valid=None,
+            flyby_altitude=None,
+            dv_periapsis=None,
+            dv_periapsis_vec=None,
+            dv_limit=None,
+            J_total=0.0,
+        )
+        offset_a = replace(
+            base_state,
+            r=(base_state.r[0], 10.0 * KMPAU, -5.0 * KMPAU),
+            seed_offset=(10.0, -5.0),
+        )
+        offset_b = replace(
+            base_state,
+            r=(base_state.r[0], -10.0 * KMPAU, 5.0 * KMPAU),
+            seed_offset=(-10.0, 5.0),
+        )
+        key_a = key_fn((offset_a,))
+        key_b = key_fn((offset_b,))
+        self.assertNotEqual(key_a, key_b)
+
+    def test_seed_prunes_large_transverse_vinf(self):
+        config = make_lambert_config(dv_max=None, vinf_max=None, tof_max_days=None, dv_mode="fixed")
+        registry = BodyRegistry(
+            body_ids=(1,),
+            semi_major_axes={1: BASE_SEMI_MAJOR_AXES[1]},
+            weights={1: BASE_BODY_WEIGHTS[1]},
+            tof_sample_count=3,
+        )
+        parent = Encounter(
+            body=INTERSTELLAR_BODY_ID,
+            t=0.0,
+            r=(0.0, 0.0, 0.0),
+            seed_offset=(10.0, -5.0),
+        )
+        proposal = SimpleNamespace(body=1, tof=10.0)
+
+        def score_stub(_config, _registry, _prefix, _parent, child, _meta):
+            return 0.0, child
+
+        with patch("gtoc13.path_finding.beam.lambert.body_state", return_value=(np.zeros(3), np.zeros(3))), \
+             patch("gtoc13.path_finding.beam.lambert.evaluate_flyby", return_value=(None, None, None, None)), \
+             patch(
+                 "gtoc13.path_finding.beam.lambert.enumerate_lambert_solutions",
+                 return_value=[
+                     {
+                         "v1": np.array([0.0, 4.0, 4.0]),
+                         "v2": np.zeros(3),
+                         "r1": np.zeros(3),
+                         "r2": np.zeros(3),
+                         "rev": 0,
+                     }
+                 ],
+             ):
+            with self.assertRaises(InfeasibleLeg):
+                resolve_lambert_leg(config, registry, (parent,), proposal, score_stub)
+
+    def test_seed_allows_small_transverse_vinf(self):
+        config = make_lambert_config(dv_max=None, vinf_max=None, tof_max_days=None, dv_mode="fixed")
+        registry = BodyRegistry(
+            body_ids=(1,),
+            semi_major_axes={1: BASE_SEMI_MAJOR_AXES[1]},
+            weights={1: BASE_BODY_WEIGHTS[1]},
+            tof_sample_count=3,
+        )
+        parent = Encounter(
+            body=INTERSTELLAR_BODY_ID,
+            t=0.0,
+            r=(0.0, 0.0, 0.0),
+            seed_offset=(5.0, 5.0),
+        )
+        proposal = SimpleNamespace(body=1, tof=10.0)
+
+        def score_stub(_config, _registry, _prefix, _parent, child, _meta):
+            return 0.0, child
+
+        with patch("gtoc13.path_finding.beam.lambert.body_state", return_value=(np.zeros(3), np.zeros(3))), \
+             patch("gtoc13.path_finding.beam.lambert.evaluate_flyby", return_value=(None, None, None, None)), \
+             patch(
+                 "gtoc13.path_finding.beam.lambert.enumerate_lambert_solutions",
+                 return_value=[
+                     {
+                         "v1": np.array([0.0, 2.0, 1.0]),
+                         "v2": np.zeros(3),
+                         "r1": np.zeros(3),
+                         "r2": np.zeros(3),
+                         "rev": 0,
+                     }
+                 ],
+             ):
+            contrib, state = resolve_lambert_leg(config, registry, (parent,), proposal, score_stub)
+        self.assertEqual(contrib, 0.0)
+        self.assertEqual(state[0].body, INTERSTELLAR_BODY_ID)
+        self.assertEqual(state[-1].body, proposal.body)
+
+    def test_seed_limits_lambert_revolutions(self):
+        config = make_lambert_config(dv_max=None, vinf_max=None, tof_max_days=None, dv_mode="fixed")
+        registry = BodyRegistry(
+            body_ids=(1,),
+            semi_major_axes={1: BASE_SEMI_MAJOR_AXES[1]},
+            weights={1: BASE_BODY_WEIGHTS[1]},
+            tof_sample_count=3,
+        )
+        parent = Encounter(
+            body=INTERSTELLAR_BODY_ID,
+            t=0.0,
+            r=(0.0, 0.0, 0.0),
+            seed_offset=(3.0, -2.0),
+        )
+        proposal = SimpleNamespace(body=1, tof=20.0)
+
+        def score_stub(_config, _registry, _prefix, _parent, child, _meta):
+            return 0.0, child
+
+        captured_max_rev: dict[str, int] = {}
+
+        def fake_enum(_bd, _ba, _td, _ta, max_revs):
+            captured_max_rev["value"] = max_revs
+            return [
+                {
+                    "v1": np.array([0.0, 1.0, 1.0]),
+                    "v2": np.zeros(3),
+                    "r1": np.zeros(3),
+                    "r2": np.zeros(3),
+                    "rev": 0,
+                }
+            ]
+
+        with patch("gtoc13.path_finding.beam.lambert.body_state", return_value=(np.zeros(3), np.zeros(3))), \
+             patch("gtoc13.path_finding.beam.lambert.evaluate_flyby", return_value=(None, None, None, None)), \
+             patch("gtoc13.path_finding.beam.lambert.enumerate_lambert_solutions", side_effect=fake_enum):
+            resolve_lambert_leg(config, registry, (parent,), proposal, score_stub)
+
+        self.assertEqual(captured_max_rev.get("value"), 0)
 
 
 class TestMissionRawScoring(unittest.TestCase):

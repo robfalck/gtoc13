@@ -6,6 +6,8 @@ import jax.numpy as jnp
 import pydantic
 from pydantic import ConfigDict
 
+from gtoc13.cartesian_state import CartesianState
+from gtoc13.constants import KMPAU, YEAR, SPTU
 from gtoc13.orbital_elements import OrbitalElements
 
 
@@ -162,6 +164,97 @@ class Body(pydantic.BaseModel):
         return f"{self.name} (ID: {self.id})"
 
 
+INTERSTELLAR_BODY_ID = 0
+_INTERSTELLAR_POSITION_KM = jnp.array([-200.0 * KMPAU, 0.0, 0.0])
+_INTERSTELLAR_POSITION_AU = _INTERSTELLAR_POSITION_KM / KMPAU
+_INTERSTELLAR_VELOCITY_KM_S = jnp.array([1.0, 0.0, 0.0])
+_INTERSTELLAR_VELOCITY_AU_S = _INTERSTELLAR_VELOCITY_KM_S / KMPAU
+
+
+class InterstellarBody:
+    """
+    Synthetic interstellar starting body used strictly as the launch origin.
+
+    It provides a fixed heliocentric state regardless of the requested epoch
+    and is excluded from regular encounter expansions.
+    """
+
+    name = "Interstellar"
+    id = INTERSTELLAR_BODY_ID
+    mu = 0.0
+    radius = 0.0
+    weight = 0.0
+    elements = None
+
+    @staticmethod
+    def _time_factor(time_units: str) -> float:
+        units = (time_units or "s").lower()
+        if units in ("s", "seconds"):
+            return 1.0
+        if units in ("year", "years"):
+            return YEAR
+        if units == "tu":
+            return SPTU
+        raise ValueError(
+            f"Invalid time_units '{time_units}'. Must be one of: 's', 'year', 'TU'"
+        )
+
+    @staticmethod
+    def _position(distance_units: str):
+        units = (distance_units or "km").upper()
+        if units == "KM":
+            return _INTERSTELLAR_POSITION_KM
+        if units in ("AU", "DU"):
+            return _INTERSTELLAR_POSITION_AU
+        raise ValueError(
+            f"Invalid distance_units '{distance_units}'. Must be one of: 'km', 'AU', 'DU'"
+        )
+
+    @staticmethod
+    def _velocity(distance_units: str, time_factor: float):
+        units = (distance_units or "km").upper()
+        if units == "KM":
+            return _INTERSTELLAR_VELOCITY_KM_S * time_factor
+        if units in ("AU", "DU"):
+            return _INTERSTELLAR_VELOCITY_AU_S * time_factor
+        raise ValueError(
+            f"Invalid distance_units '{distance_units}'. Must be one of: 'km', 'AU', 'DU'"
+        )
+
+    # Pydantic models expose model_dump; emulate the minimal surface that callers use.
+    def model_dump(self, *args, **kwargs):  # pragma: no cover - compatibility shim
+        return {
+            "name": self.name,
+            "id": self.id,
+            "mu": self.mu,
+            "radius": self.radius,
+            "weight": self.weight,
+            "elements": self.elements,
+        }
+
+    def get_state(self, epoch: float, time_units: str = "s", distance_units: str = "km"):
+        # ``epoch`` is ignored because the body has a fixed heliocentric state.
+        time_factor = self._time_factor(time_units)
+        r = self._position(distance_units)
+        v = self._velocity(distance_units, time_factor)
+        return CartesianState(r=jnp.asarray(r), v=jnp.asarray(v))
+
+    def get_period(self, units: str = "year") -> float:
+        raise ValueError("Interstellar does not have a defined orbital period.")
+
+    def is_planet(self) -> bool:
+        return False
+
+    def is_small_body(self) -> bool:
+        return True
+
+    def __repr__(self) -> str:
+        return "InterstellarBody(id=0, name='Interstellar')"
+
+    def __str__(self) -> str:
+        return "Interstellar (ID: 0)"
+
+
 def load_bodies_data() -> dict[int, Body]:
     """
     Load all bodies (planets, asteroids, comets) from CSV files.
@@ -250,6 +343,7 @@ def load_bodies_data() -> dict[int, Body]:
                 )
                 bodies[body_id] = body
 
+    bodies[INTERSTELLAR_BODY_ID] = InterstellarBody()
     return bodies
 
 

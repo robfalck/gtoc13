@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Tuple
 
-from gtoc13.bodies import bodies_data
+from gtoc13.bodies import bodies_data, INTERSTELLAR_BODY_ID
 from gtoc13.constants import KMPAU
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,9 @@ def _infer_body_type(body_id: int) -> str:
 
 
 BODY_TYPES = {bid: _infer_body_type(bid) for bid in bodies_data.keys()}
-BASE_BODY_IDS = tuple(sorted(bodies_data.keys()))
+if INTERSTELLAR_BODY_ID in BODY_TYPES:
+    BODY_TYPES[INTERSTELLAR_BODY_ID] = "interstellar"
+BASE_BODY_IDS = tuple(sorted(bid for bid in bodies_data.keys() if bid != INTERSTELLAR_BODY_ID))
 BASE_SEMI_MAJOR_AXES = {
     bid: float(getattr(getattr(bodies_data[bid], "elements", None), "a", getattr(bodies_data[bid], "a", 0.0)))
     for bid in BASE_BODY_IDS

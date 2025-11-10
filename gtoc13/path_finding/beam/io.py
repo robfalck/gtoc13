@@ -73,6 +73,7 @@ def write_results(
     resume_rank: Optional[int] = None,
     resume_index: Optional[int] = None,
     allow_repeat: bool = True,
+    interstellar_expansions: Optional[int] = None,
 ) -> None:
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -96,6 +97,7 @@ def write_results(
             "resume_rank": resume_rank,
             "resume_index": resume_index,
             "allow_repeat": allow_repeat,
+            "interstellar_expansions": interstellar_expansions,
         },
         "solutions": top_nodes,
     }
