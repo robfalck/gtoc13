@@ -20,7 +20,7 @@ from numpy import float64
 
 @timer
 def initialize_model(
-    index_params: IndexParams, discrete_data: dict, flyby_history: Optional[dict] = None
+    index_params: IndexParams, discrete_data: dict, flyby_history: Optional[dict]
 ) -> pyo.ConcreteModel:
     """
     Creates indices from the inputs for variables and constraints in the problem.
@@ -56,7 +56,7 @@ def initialize_model(
     seq_model.gt_p = pyo.Param(initialize=index_params.gt_planets)
     seq_model.dt_tol = pyo.Param(initialize=float(DAY * 7 / SPTU), within=pyo.PositiveReals)
     if flyby_history:
-        seq_model.flyby_history = pyo.Param(seq_model.K, initialize=flyby_history)
+        seq_model.flyby_history = pyo.Param(seq_model.K, initialize=flyby_history, within=pyo.Any)
 
     # Cartesian product sets
     seq_model.KI = pyo.Set(initialize=[(k, i) for k in seq_model.K for i in seq_model.I])
@@ -119,16 +119,21 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     def flyby_limit_rule(model, k):
         if model.find_component("flyby_history"):
-            prev_flyby = len(model.flyby_history[k])
+            prev_flyby = len(model.flyby_history[k]) - pyo.quicksum(model.x_kih[k, :, 1])
         else:
             prev_flyby = 0
-        pyo.quicksum(model.x_kik[k, ...]) + prev_flyby <= seq_model.Nk_limit
+        return pyo.quicksum(model.x_kih[k, ...]) + prev_flyby <= seq_model.Nk_limit
 
     # for each k, there can only be a total of N_k flybys counted
     seq_model.flyby_limit = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) <= seq_model.Nk_limit,
+        rule=flyby_limit_rule,
     )
+    # # for each k, there can only be a total of N_k flybys counted
+    # seq_model.flyby_limit = pyo.Constraint(
+    #     seq_model.K,
+    #     rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) <= seq_model.Nk_limit,
+    # )
 
     print("...create x_*ih monotonic time constraints...")
     # for each h, the time must be greater than the previous h
@@ -241,12 +246,26 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
         seq_model.KI,
         rule=lambda model, k, i: model.z_ki[k, i] <= pyo.quicksum(model.x_kih[k, i, :]),
     )
-    # if there is a flyby for body k, then there must be a first flyby for k.
+
+    # if there is a flyby for body k, then there must be a first flyby for k, unless it's already in the history.
+    def z_bigm_x_history_rule(model, k):
+        if model.find_component("flyby_history"):
+            history_term = len(model.flyby_history[k])
+        else:
+            history_term = 0
+        return model.H.at(-1) * (pyo.quicksum(model.z_ki[k, :]) + history_term) >= pyo.quicksum(
+            model.x_kih[k, ...]
+        )
+
     seq_model.z_bigm_x = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :])
-        >= pyo.quicksum(model.x_kih[k, ...]),
+        rule=z_bigm_x_history_rule,
     )
+    # seq_model.z_bigm_x = pyo.Constraint(
+    #     seq_model.K,
+    #     rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :])
+    #     >= pyo.quicksum(model.x_kih[k, ...]),
+    # )
     # if there are previous flybys at time i, i cannot be a first flyby
     seq_model.z_implies_not_y = pyo.Constraint(
         seq_model.KI,
@@ -431,3 +450,15 @@ def disallow_end_position(seq_model: pyo.ConcreteModel, disallowed: list[int] | 
         seq_model.disallow.add(
             pyo.quicksum(seq_model.x_kih[disallowed, :, seq_model.H.at(-1)]) == 0
         )
+
+
+@timer
+def disallow_in_segment(seq_model: pyo.ConcreteModel, disallowed: list[int] | int):
+    if not seq_model.find_component("disallow"):
+        seq_model.disallow = pyo.ConstraintList()
+    if isinstance(disallowed, list):
+        seq_model.disallow.add(
+            pyo.quicksum(seq_model.x_kih[d_body, ...] for d_body in disallowed) == 0
+        )
+    else:
+        seq_model.disallow.add(pyo.quicksum(seq_model.x_kih[disallowed, ...]) == 0)

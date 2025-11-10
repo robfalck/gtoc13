@@ -1,5 +1,5 @@
 from numpy import ndarray
-from b_utils import timer, IndexParams, SolverParams, DVTable
+from b_utils import timer, IndexParams, SolverParams, DVTable, SequenceTarget
 from build_model import (
     initialize_model,
     x_vars_and_constrs,
@@ -71,6 +71,7 @@ def run_segment_problem(
     discrete_data: dict,
     solver_params: SolverParams,
     dv_table: DVTable | None = None,
+    sequence: list[SequenceTarget] | None = None,
     flyby_history: dict[int : list[ndarray]] | None = None,
     disallowed: int | list[int] | None = None,
 ):
@@ -82,7 +83,9 @@ def run_segment_problem(
     - process, save the flybys, last item and timestep (not index), unique planets visited
     """
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")
-    segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
+    segment_model = initialize_model(
+        index_params=index_params, discrete_data=discrete_data, flyby_history=flyby_history
+    )
     x_vars_and_constrs(segment_model)
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
@@ -103,6 +106,10 @@ def run_segment_problem(
         print("<<<<< DISALLOWED END TARGETS ADDED <<<<<\n")
     print("<<<<< MODEL SETUP COMPLETE <<<<<")
 
-    sequence, flyby_history, model = generate_segment(segment_model, solver_params, flyby_history)
+    segment, flyby_history, model = generate_segment(segment_model, solver_params, flyby_history)
     print("...total time...")
-    return sequence, flyby_history, model
+    if sequence:
+        sequence.extend(segment)
+        return sequence, flyby_history, model
+    else:
+        return segment, flyby_history, model

@@ -148,7 +148,7 @@ def lin_dots_penalty(r_i: np.array, r_j: np.array) -> np.float32:
 
 @timer
 def create_discrete_dataset(
-    Yo: float, Yf: float, bodies_data: dict, perYear: int = 2
+    Yo: float, Yf: float, bodies_data: dict, perYear: int = 2, include_small: bool = False
 ) -> tuple[dict, list[int], int, np.ndarray]:
     To = float(Yo / YPTU)
     Tf = float(Yf / YPTU)  # years per TU
@@ -158,7 +158,21 @@ def create_discrete_dataset(
     dis_ephm = dict()
     k_body = []
     for b_idx, body in tqdm(bodies_data.items()):
-        if body.is_planet() or body.name == "Yandi":
+        if not include_small:
+            if body.is_planet() or body.name == "Yandi":
+                k_body.append(b_idx)
+                dis_ephm[b_idx] = DisBody(
+                    name=body.name,
+                    weight=body.weight,
+                    r_du=np.array(
+                        [
+                            body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
+                            for idx in range(num)
+                        ]
+                    ),
+                    t_tu=timesteps,
+                )
+        else:
             k_body.append(b_idx)
             dis_ephm[b_idx] = DisBody(
                 name=body.name,
