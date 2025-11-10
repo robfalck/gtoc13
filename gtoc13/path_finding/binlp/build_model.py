@@ -116,6 +116,14 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     )
 
     print("...create x_k** max number of scientific flybys...")
+
+    def flyby_limit_rule(model, k):
+        if model.find_component("flyby_history"):
+            prev_flyby = len(model.flyby_history[k])
+        else:
+            prev_flyby = 0
+        pyo.quicksum(model.x_kik[k, ...]) + prev_flyby <= seq_model.Nk_limit
+
     # for each k, there can only be a total of N_k flybys counted
     seq_model.flyby_limit = pyo.Constraint(
         seq_model.K,

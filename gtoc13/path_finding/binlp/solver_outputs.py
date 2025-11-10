@@ -89,8 +89,12 @@ def process_flybys(
     first_flybys = [ki for ki, v in model.z_ki.items() if pyo.value(v) > 0.5]
     pprint(sorted(first_flybys, key=lambda x: model.tu_ki[x]))
     if flyby_history:
+        bodies = flyby_history.keys()
         for k, i in first_flybys:
-            flyby_history[k].append(model.rdu_ki[k, i])
+            if k in bodies:
+                flyby_history[k].append(model.rdu_ki[k, i])
+            else:
+                flyby_history.update({k: [model.rdu_ki[k, i]]})
     else:
         flyby_history = {k: [model.rdu_ki[k, i]] for (k, i) in first_flybys}
     # flyby_history = {}
