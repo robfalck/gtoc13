@@ -15,7 +15,7 @@ from problems import run_basic_problem, run_trajectory_problem
 
 ############### EDIT CONFIG ###############
 debug = False
-input_dict = dict(Yo=1, Yf=8, perYear=1.5, bodies_data=bodies_data)
+input_dict = dict(Yo=1, Yf=8, perYear=5, bodies_data=bodies_data)
 discrete_data, k_body, num, timesteps = create_discrete_dataset(**input_dict)
 dv_table = build_dv_table(k_body, timesteps)
 pidxs_params = IndexParams(
@@ -23,9 +23,9 @@ pidxs_params = IndexParams(
     n_timesteps=num,
     seq_length=6,
     flyby_limit=3,
-    gt_planets=7,
-    dv_limit=10.0,
-    first_arcs=[(10, (1, 3)), 9, 8],
+    gt_planets=6,
+    dv_limit=100.0,
+    first_arcs=[(10, 9, 8, 7)],
 )
 solv_params = SolverParams(
     solver_name="scip",  # AMPL-format solvers
