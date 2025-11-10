@@ -6,7 +6,7 @@ import numpy as np
 import dymos as dm
 
 from gtoc13 import bodies_data
-from gtoc13.dymos_solver.dymos_solver import get_dymos_solver_problem
+from gtoc13.dymos_solver.dymos_solver import get_dymos_vectorized_solver_problem
 
 
 class GeneralConstraint(BaseModel):
@@ -526,7 +526,7 @@ class MissionPlan(BaseModel):
         if warm_start:
             print("Enabling IPOPT warm-start settings for solution guess")
 
-        prob, phase = get_dymos_solver_problem(self.bodies, num_nodes=num_nodes, warm_start=warm_start)
+        prob, phase = get_dymos_vectorized_solver_problem(self.bodies, num_nodes=num_nodes, warm_start=warm_start)
 
         # Add design variables with defaults
         for var_name, dv in self.get_design_variables_with_defaults().items():
@@ -813,7 +813,5 @@ class MissionPlan(BaseModel):
         phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='gtoc_year')
 
         dm.run_problem(prob, run_driver=run_driver, simulate=False)
-
-        prob.model.list_vars(print_arrays=True, units=True)
 
         return prob
