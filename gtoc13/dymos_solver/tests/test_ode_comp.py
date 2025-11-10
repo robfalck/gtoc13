@@ -10,7 +10,7 @@ import dymos as dm
 from openmdao.utils.assert_utils import assert_near_equal
 
 from gtoc13.bodies import bodies_data
-from gtoc13.dymos_solver.ode_comp import SolarSailODEComp
+from gtoc13.dymos_solver.ode_comp import SolarSailVectorizedODEComp
 from gtoc13.constants import MU_ALTAIRA, YEAR, KMPAU, R0
 
 # Add our specific DU and TU to OpenMDAO's recognized units.
@@ -83,7 +83,7 @@ class TestODEComp(unittest.TestCase):
         # tx = dm.Birkhoff(num_nodes=num_nodes, grid_type='lgl')
         tx = dm.PicardShooting(num_segments=1, nodes_per_seg=num_nodes, solve_segments='backward')
 
-        phase = dm.Phase(ode_class=SolarSailODEComp,
+        phase = dm.Phase(ode_class=SolarSailVectorizedODEComp,
                          ode_init_kwargs={'N': N, 'r0': 1.0},
                          transcription=tx)
 
