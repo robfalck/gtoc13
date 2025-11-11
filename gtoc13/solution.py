@@ -155,6 +155,10 @@ class ConicArc(BaseModel):
     position_end: Tuple[float, float, float] = Field(..., description="End position (km)")
     velocity_start: Tuple[float, float, float] = Field(..., description="Start velocity (km/s)")
     velocity_end: Tuple[float, float, float] = Field(..., description="End velocity (km/s)")
+    bodies: Tuple[int, int] = Field(
+        default=None,
+        description="Bodies joined by this arc: (from_body, to_body). -1 indicates problem start."
+    )
 
     @model_validator(mode='after')
     def validate_time_order(self):
@@ -190,7 +194,8 @@ class ConicArc(BaseModel):
         position_start: Tuple[float, float, float],
         position_end: Tuple[float, float, float],
         velocity_start: Tuple[float, float, float],
-        velocity_end: Tuple[float, float, float]
+        velocity_end: Tuple[float, float, float],
+        bodies: Tuple[int, int] = None
     ) -> 'ConicArc':
         """
         Create a conic arc (ballistic coast).
@@ -202,6 +207,7 @@ class ConicArc(BaseModel):
             position_end: End position (km)
             velocity_start: Start velocity (km/s)
             velocity_end: End velocity (km/s)
+            bodies: Bodies joined by this arc (from_body, to_body). -1 indicates problem start.
 
         Returns:
             ConicArc object
@@ -212,7 +218,8 @@ class ConicArc(BaseModel):
             position_start=position_start,
             position_end=position_end,
             velocity_start=velocity_start,
-            velocity_end=velocity_end
+            velocity_end=velocity_end,
+            bodies=bodies
         )
 
 
@@ -229,6 +236,10 @@ class PropagatedArc(BaseModel):
     control_type: Literal['radial', 'optimal', 'N/A'] = Field(
         default='N/A',
         description="Control type: 'radial' (sun-pointing), 'optimal' (optimized), or 'N/A' (conic/ballistic)"
+    )
+    bodies: Tuple[int, int] = Field(
+        default=None,
+        description="Bodies joined by this arc: (from_body, to_body). -1 indicates problem start."
     )
 
     @model_validator(mode='after')
@@ -261,7 +272,8 @@ class PropagatedArc(BaseModel):
         positions: List[Tuple[float, float, float]],
         velocities: List[Tuple[float, float, float]],
         controls: List[Tuple[float, float, float]],
-        control_type: Literal['radial', 'optimal', 'N/A'] = 'N/A'
+        control_type: Literal['radial', 'optimal', 'N/A'] = 'N/A',
+        bodies: Tuple[int, int] = None
     ) -> 'PropagatedArc':
         """
         Create a propagated arc from lists of epochs, positions, velocities, and controls.
@@ -275,6 +287,7 @@ class PropagatedArc(BaseModel):
             velocities: List of velocity vectors (km/s)
             controls: List of control vectors (sail normal unit vectors)
             control_type: Type of control - 'radial' (sun-pointing), 'optimal' (optimized), or 'N/A' (default: 'N/A')
+            bodies: Bodies joined by this arc (from_body, to_body) where 0 indicates heliocentric
 
         Returns:
             PropagatedArc object
@@ -311,7 +324,7 @@ class PropagatedArc(BaseModel):
         #     for epoch, pos, vel, ctrl in zip(t, r, v, u)
         # ]
 
-        return PropagatedArc(state_points=state_points, control_type=control_type)
+        return PropagatedArc(state_points=state_points, control_type=control_type, bodies=bodies)
 
     @staticmethod
     def simulate(epochs, positions, velocities, controls):
@@ -557,8 +570,11 @@ class GTOC13Solution(BaseModel):
                 ax.plot(orbit_x, orbit_y, '--', alpha=0.5, linewidth=1, label=f'{name} orbit')
 
         # Plot trajectory arcs
+        last_propagated_arc = None
+        last_flyby_arc = None
         for i, arc in enumerate(self.arcs):
             if isinstance(arc, PropagatedArc):
+                last_propagated_arc = arc
                 # Extract x, y positions from propagated arc
                 x = [pt.position[0] for pt in arc.state_points]
                 y = [pt.position[1] for pt in arc.state_points]
@@ -590,6 +606,7 @@ class GTOC13Solution(BaseModel):
                                 zorder=4)
 
             elif isinstance(arc, FlybyArc):
+                last_flyby_arc = arc
                 # Mark flyby location
                 x_flyby = arc.position[0] if hasattr(arc, 'position') else None
                 y_flyby = arc.position[1] if hasattr(arc, 'position') else None
@@ -608,6 +625,54 @@ class GTOC13Solution(BaseModel):
                                   xy=(x_flyby, y_flyby),
                                   xytext=(10, 10), textcoords='offset points',
                                   fontsize=8, alpha=0.7)
+
+        # Propagate final state for 50 years and plot
+        # Use the last flyby's outgoing state if available, otherwise use last propagated arc's final state
+        if last_flyby_arc is not None:
+            import numpy as np
+            from scipy.integrate import solve_ivp
+            from gtoc13.constants import MU_ALTAIRA, YEAR
+            from gtoc13.odes import ballistic_ode
+
+            final_position = np.array(last_flyby_arc.position)
+            final_velocity = np.array(last_flyby_arc.velocity_out)
+        elif last_propagated_arc is not None:
+            import numpy as np
+            from scipy.integrate import solve_ivp
+            from gtoc13.constants import MU_ALTAIRA, YEAR
+            from gtoc13.odes import ballistic_ode
+
+            final_state = last_propagated_arc.state_points[-1]
+            final_position = np.array(final_state.position)
+            final_velocity = np.array(final_state.velocity)
+
+        if last_flyby_arc is not None or last_propagated_arc is not None:
+
+            # Propagate for 50 years using ballistic ODE
+            y0 = np.concatenate([final_position, final_velocity])
+            t_span = (0.0, 50.0 * YEAR)
+            t_eval = np.linspace(0.0, 50.0 * YEAR, 1000)
+
+            def ode_func(t, y):
+                return np.asarray(ballistic_ode(t, y, (MU_ALTAIRA,)))
+
+            sol = solve_ivp(
+                ode_func,
+                t_span,
+                y0,
+                method='DOP853',
+                t_eval=t_eval,
+                rtol=1e-12,
+                atol=1e-12
+            )
+
+            # Extract x, y positions from propagated trajectory
+            prop_x = sol.y[0, :]
+            prop_y = sol.y[1, :]
+
+            # Plot propagated trajectory
+            ax.plot(prop_x, prop_y, 'm--', linewidth=1.5, alpha=0.6,
+                   label='Propagated (50 years)')
 
         # Formatting
         ax.set_xlabel('X Position (km)', fontsize=12)
@@ -661,7 +726,7 @@ class GTOC13Solution(BaseModel):
         return fig, ax
 
     @classmethod
-    def from_file(cls, filepath: str | Path) -> 'GTOC13Solution':
+    def load(cls, filepath: str | Path) -> 'GTOC13Solution':
         """
         Read a solution from a GTOC13 submission file.
 
@@ -712,9 +777,26 @@ class GTOC13Solution(BaseModel):
         """
         Parse a list of state points into structured arcs.
         This is a simplified parser - could be enhanced with more validation.
+        Automatically infers the bodies joined by each arc based on flyby sequence.
         """
         arcs = []
         i = 0
+
+        # Helper function to find the next flyby body after index i
+        def find_next_flyby_body(start_idx: int) -> int:
+            """Find the next flyby body_id after start_idx, or None if no more flybys"""
+            for j in range(start_idx, len(state_points)):
+                if state_points[j].body_id > 0:
+                    return state_points[j].body_id
+            return None
+
+        # Helper function to find the previous flyby body before index i
+        def find_previous_flyby_body(end_idx: int) -> int:
+            """Find the previous flyby body_id before end_idx, or -1 if at start"""
+            for j in range(end_idx - 1, -1, -1):
+                if state_points[j].body_id > 0:
+                    return state_points[j].body_id
+            return -1  # -1 indicates problem start
 
         while i < len(state_points):
             pt = state_points[i]
@@ -753,24 +835,36 @@ class GTOC13Solution(BaseModel):
                 if i + 1 >= len(state_points):
                     raise ValueError("Conic arc must have at least 2 points")
                 pt_next = state_points[i + 1]
+
+                # Infer bodies: from previous flyby (or -1) to next flyby
+                from_body = find_previous_flyby_body(i)
+                to_body = find_next_flyby_body(i)
+
                 arcs.append(ConicArc(
                     epoch_start=pt.epoch,
                     epoch_end=pt_next.epoch,
                     position_start=pt.position,
                     position_end=pt_next.position,
                     velocity_start=pt.velocity,
-                    velocity_end=pt_next.velocity
+                    velocity_end=pt_next.velocity,
+                    bodies=(from_body, to_body)
                 ))
                 i += 2
 
             # Propagated arc (body_id=0, flag=1)
             else:
+                prop_start_idx = i
                 prop_points = [pt]
                 i += 1
                 # Collect all consecutive propagated points
                 while i < len(state_points) and state_points[i].body_id == 0 and state_points[i].flag == 1:
                     prop_points.append(state_points[i])
                     i += 1
-                arcs.append(PropagatedArc(state_points=prop_points))
+
+                # Infer bodies: from previous flyby (or -1) to next flyby
+                from_body = find_previous_flyby_body(prop_start_idx)
+                to_body = find_next_flyby_body(prop_start_idx)
+
+                arcs.append(PropagatedArc(state_points=prop_points, bodies=(from_body, to_body)))
 
         return arcs

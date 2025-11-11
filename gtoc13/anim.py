@@ -88,7 +88,7 @@ def propagate_final_state(final_state: dict, duration_years: float = 50.0, n_poi
     # Integrate using ballistic ODE (Keplerian motion)
     # Note: ballistic_ode expects args=(mu,)
     def ode_func(t, y):
-        return ballistic_ode(t, y, (MU_ALTAIRA,))
+        return np.asarray(ballistic_ode(t, y, (MU_ALTAIRA,)))
 
     sol = solve_ivp(
         ode_func,
