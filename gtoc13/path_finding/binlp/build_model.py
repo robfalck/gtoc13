@@ -456,27 +456,19 @@ def nogood_cuts_constrs(seq_model: pyo.ConcreteModel):
 
 
 @timer
-def disallow_end_position(seq_model: pyo.ConcreteModel, disallowed: list[int] | int):
+def disallow_constrs(
+    seq_model: pyo.ConcreteModel,
+    disallowed: list[tuple[int, str]],
+):
     if not seq_model.find_component("disallow"):
         seq_model.disallow = pyo.ConstraintList()
-    if isinstance(disallowed, list):
-        seq_model.disallow.add(
-            pyo.quicksum(seq_model.x_kih[d_body, :, seq_model.H.at(-1)] for d_body in disallowed)
-            == 0
-        )
-    else:
-        seq_model.disallow.add(
-            pyo.quicksum(seq_model.x_kih[disallowed, :, seq_model.H.at(-1)]) == 0
-        )
-
-
-@timer
-def disallow_in_segment(seq_model: pyo.ConcreteModel, disallowed: list[int] | int):
-    if not seq_model.find_component("disallow"):
-        seq_model.disallow = pyo.ConstraintList()
-    if isinstance(disallowed, list):
-        seq_model.disallow.add(
-            pyo.quicksum(seq_model.x_kih[d_body, ...] for d_body in disallowed) == 0
-        )
-    else:
-        seq_model.disallow.add(pyo.quicksum(seq_model.x_kih[disallowed, ...]) == 0)
+    for body in disallowed:
+        match body[-1]:
+            case "all":
+                seq_model.disallow.add(pyo.quicksum(seq_model.x_kih[body[0], ...]) == 0)
+            case "end":
+                seq_model.disallow.add(
+                    pyo.quicksum(seq_model.x_kih[body[0], :, seq_model.H.at(-1)]) == 0
+                )
+            case __:
+                raise Exception("type 'all' or 'end' after the body ID.")
