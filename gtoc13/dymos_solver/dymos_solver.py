@@ -9,8 +9,11 @@ import openmdao.api as om
 import openmdao.utils.units as om_units
 import dymos as dm
 
+from lamberthub import vallado2013_jax
+
 from gtoc13 import bodies_data, GTOC13Solution, PropagatedArc, FlybyArc, ConicArc
 from gtoc13.constants import MU_ALTAIRA, KMPDU, SPTU, R0
+from gtoc13.analytic import propagate_ballistic
 
 from gtoc13.dymos_solver.ephem_comp import EphemComp
 from gtoc13.dymos_solver.v_concat_comp import VConcatComp
@@ -243,7 +246,6 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
     _t0 = np.array(t0).reshape((1,))
     all_times_yr = np.concatenate((_t0, flyby_times))
     dt_yr = np.diff(all_times_yr)
-    dt_s = dt_yr * YEAR
 
     # Set t0 and dt
     prob.set_val('t0', t0, units='gtoc_year')
@@ -259,8 +261,13 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
     if guess_solution is not None:
         non_flyby_arcs = [arc for arc in guess_solution.arcs
                         if isinstance(arc, (PropagatedArc, ConicArc))]
+        last_guess_flyby_arc = guess_solution.arcs[-1]
+        if not isinstance(last_guess_flyby_arc, FlybyArc):
+            last_guess_flyby_arc=None
     else:
         non_flyby_arcs = []
+
+    last_guess_flyby_arc = None
 
     # Track the last loaded arc's final time to ensure continuity
     last_loaded_time_s = None
@@ -283,8 +290,17 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
             if i == 0:
                 t_initial_s = t0 * YEAR
                 t_final_s = flyby_times_s[0]
+                dt_arc_s = t_final_s - t_initial_s
                 r1 = np.array([-200.0, 0.0, 0.0]) * KMPDU
                 r2 = bodies_data[bodies[0]].get_state(t_final_s).r
+
+                v_guess = (r2 - r1) / dt_arc_s
+            
+                # time is connected to an output, no guess necessary
+                phase.set_state_val('r', vals=[r1, r2], units='km')
+                phase.set_state_val('v', vals=[v_guess, v_guess], units='km/s')
+                print(f"Arc {i} (linear guess): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
+   
             else:
                 # If we have a last loaded time, use it to ensure continuity
                 if last_loaded_time_s is not None:
@@ -293,21 +309,43 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
                     t_initial_s = flyby_times_s[i-1]
 
                 t_final_s = flyby_times_s[i]
+                dt_arc_s = t_final_s - t_initial_s
+
                 r1 = bodies_data[bodies[i-1]].get_state(t_initial_s).r
                 r2 = bodies_data[bodies[i]].get_state(t_final_s).r
 
-            print(f"Arc {i} (no guess): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
+                try:
+                    v1, v2, resid = vallado2013_jax(MU_ALTAIRA, r1, r2, t_final_s-t_initial_s)
+                    if np.any(np.isnan(v1)) or resid > 1.0E-8:
+                        raise ValueError('lambert failed')
+                    else:
+                        nodes_tau = phase.options['transcription'].grid_data.node_ptau
+                        node_times = t_initial_s + (t_final_s - t_initial_s) * nodes_tau
+                        r, v = propagate_ballistic(r1, v1, node_times)
+                        phase.set_state_val('r', vals=r, units='km')
+                        phase.set_state_val('v', vals=v, units='km/s')
+
+                    print(f"Arc {i} (lambert guess): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
+
+                except Exception as e:
+                    print(e)
+                    # Linear guess
+                    r1 = bodies_data[bodies[i-1]].get_state(t_initial_s).r
+                    r2 = bodies_data[bodies[i]].get_state(t_final_s).r
+
+                    v_guess = (r2 - r1) / dt_arc_s
+                
+                    # time is connected to an output, no guess necessary
+                    phase.set_state_val('r', vals=[r1, r2], units='km')
+                    phase.set_state_val('v', vals=[v_guess, v_guess], units='km/s')
+
+                    print(f"Arc {i} (linear guess): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
+
 
             # Update dt for this arc to match actual time span
             dt_arc_s = t_final_s - t_initial_s
             prob.set_val('dt', dt_arc_s / YEAR, indices=[i], units='gtoc_year')
 
-            v_guess = (r2 - r1) / dt_arc_s
-        
-            # time is connected to an output, no guess necessary
-            phase.set_state_val('r', vals=[r1, r2], units='km')
-            phase.set_state_val('v', vals=[v_guess, v_guess], units='km/s')
-            
             if controls[i] == 0:
                 phase.set_parameter_val('u_n', [0., 0., 0.], units='unitless')
             elif controls[i] == 1:

@@ -212,7 +212,9 @@ Examples:
 
     if args.load:
         guess_sol = GTOC13Solution.load(args.load[0])
-    
+    else:
+        guess_sol = None
+
     set_initial_guesses(prob, bodies=args.bodies, flyby_times=args.flyby_times,
                         t0=args.t0, controls=controls, guess_solution=guess_sol)
     
