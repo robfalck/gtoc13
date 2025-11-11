@@ -226,6 +226,10 @@ class PropagatedArc(BaseModel):
         min_length=2,
         description="List of state points (minimum 2)"
     )
+    control_type: Literal['radial', 'optimal', 'N/A'] = Field(
+        default='N/A',
+        description="Control type: 'radial' (sun-pointing), 'optimal' (optimized), or 'N/A' (conic/ballistic)"
+    )
 
     @model_validator(mode='after')
     def validate_propagated_arc(self):
@@ -256,7 +260,8 @@ class PropagatedArc(BaseModel):
         epochs: List[float],
         positions: List[Tuple[float, float, float]],
         velocities: List[Tuple[float, float, float]],
-        controls: List[Tuple[float, float, float]]
+        controls: List[Tuple[float, float, float]],
+        control_type: Literal['radial', 'optimal', 'N/A'] = 'N/A'
     ) -> 'PropagatedArc':
         """
         Create a propagated arc from lists of epochs, positions, velocities, and controls.
@@ -269,6 +274,7 @@ class PropagatedArc(BaseModel):
             positions: List of position vectors (km)
             velocities: List of velocity vectors (km/s)
             controls: List of control vectors (sail normal unit vectors)
+            control_type: Type of control - 'radial' (sun-pointing), 'optimal' (optimized), or 'N/A' (default: 'N/A')
 
         Returns:
             PropagatedArc object
@@ -305,7 +311,7 @@ class PropagatedArc(BaseModel):
         #     for epoch, pos, vel, ctrl in zip(t, r, v, u)
         # ]
 
-        return PropagatedArc(state_points=state_points)
+        return PropagatedArc(state_points=state_points, control_type=control_type)
 
     @staticmethod
     def simulate(epochs, positions, velocities, controls):
@@ -372,6 +378,10 @@ class GTOC13Solution(BaseModel):
         default_factory=list,
         description="Optional comments to include in the file header"
     )
+    objective_J: float | None = Field(
+        default=None,
+        description="Approximate objective value J from the dymos problem"
+    )
 
     @model_validator(mode='after')
     def validate_solution(self):
@@ -409,6 +419,10 @@ class GTOC13Solution(BaseModel):
         stream.write(f"# Created: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         stream.write("# Units: epoch(s), position(km), velocity(km/s)\n")
 
+        # Write objective if available
+        if self.objective_J is not None:
+            stream.write(f"# Approximate Objective J: {self.objective_J:.6f}\n")
+
         # Write custom comments
         for comment in self.comments:
             if not comment.startswith('#'):
@@ -424,6 +438,7 @@ class GTOC13Solution(BaseModel):
                 t_start = arc.state_points[0].epoch / YEAR
                 t_end = arc.state_points[-1].epoch / YEAR
                 stream.write(f"# Propagated Arc: Body 0 (heliocentric) from t={t_start:.6f} years to t={t_end:.6f} years\n")
+                stream.write(f"# control: {arc.control_type}\n")
                 stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
                            f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
                            f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
@@ -447,7 +462,15 @@ class GTOC13Solution(BaseModel):
                     name_str = ""
                 # Calculate v_inf magnitude from the incoming v_inf vector
                 v_inf_mag = np.sqrt(arc.v_inf_in[0]**2 + arc.v_inf_in[1]**2 + arc.v_inf_in[2]**2)
-                stream.write(f"# Flyby of Body {arc.body_id}{name_str} at t={t_flyby:.6f} years, v_inf={v_inf_mag:.6f} km/s\n")
+
+                # Calculate final orbital energy (specific energy) after flyby
+                # E = v²/2 - μ/r (km²/s²)
+                from gtoc13.constants import MU_ALTAIRA
+                r_mag = np.sqrt(arc.position[0]**2 + arc.position[1]**2 + arc.position[2]**2)
+                v_mag_out = np.sqrt(arc.velocity_out[0]**2 + arc.velocity_out[1]**2 + arc.velocity_out[2]**2)
+                E_final = v_mag_out**2 / 2.0 - MU_ALTAIRA / r_mag
+
+                stream.write(f"# Flyby of Body {arc.body_id}{name_str} at t={t_flyby:.6f} years, v_inf={v_inf_mag:.6f} km/s, E_final={E_final:.6f} km²/s²\n")
                 stream.write(f"# {'body_id':>10} {'flag':>6} {'epoch (s)':>{16+8}} "
                            f"{'x (km)':>{precision+8}} {'y (km)':>{precision+8}} {'z (km)':>{precision+8}} "
                            f"{'vx (km/s)':>{precision+8}} {'vy (km/s)':>{precision+8}} {'vz (km/s)':>{precision+8}} "
