@@ -125,6 +125,7 @@ class BeamSearch:
         self._nodes: dict[int, Node] = {}
         self._global_best_heap: list[tuple[float, int, int]] = []
         self._global_best_nodes: dict[int, Node] = {}
+        self._global_node_key_map: dict[Hashable, int] = {}
 
     # ---------------------------- Public API ---------------------------------
 
@@ -233,19 +234,56 @@ class BeamSearch:
         top.sort(key=self._rank_key, reverse=True)
         return top
 
+    def _global_state_key(self, node: Node) -> Hashable:
+        try:
+            return self.key_fn(node.state) if self.key_fn is not None else ("nk", node.depth, node.id)
+        except Exception:
+            return ("nk", node.depth, node.id)
+
     def _add_global_candidate(self, node: Node) -> None:
         """Insert node into the global best tracker."""
         if node.depth == 0:
             return
-        heapq.heappush(self._global_best_heap, (node.cum_score, -node.id, node.id))
+        state_key = self._global_state_key(node)
+        existing_id = self._global_node_key_map.get(state_key)
+        if existing_id is not None:
+            existing = self._global_best_nodes.get(existing_id)
+            if existing is not None and existing.cum_score >= node.cum_score:
+                return
+            if existing_id in self._global_best_nodes:
+                del self._global_best_nodes[existing_id]
+        heapq.heappush(self._global_best_heap, (node.cum_score, -node.id, node.id, state_key))
         self._global_best_nodes[node.id] = node
+        self._global_node_key_map[state_key] = node.id
         while len(self._global_best_nodes) > self._return_top_k:
-            _, _, nid = heapq.heappop(self._global_best_heap)
+            entry = heapq.heappop(self._global_best_heap)
+            if len(entry) == 4:
+                _, _, nid, key = entry
+            else:
+                _, _, nid = entry
+                key = None
             if nid in self._global_best_nodes:
                 del self._global_best_nodes[nid]
+                if key is not None and self._global_node_key_map.get(key) == nid:
+                    del self._global_node_key_map[key]
+
+    def _cleanup_global_heap(self) -> None:
+        while self._global_best_heap:
+            entry = self._global_best_heap[0]
+            if len(entry) == 4:
+                _, _, nid, key = entry
+            else:
+                _, _, nid = entry
+                key = None
+            if nid in self._global_best_nodes:
+                break
+            heapq.heappop(self._global_best_heap)
+            if key is not None and self._global_node_key_map.get(key) == nid:
+                del self._global_node_key_map[key]
 
     def _global_top(self) -> List[Node]:
         """Return globally best nodes sorted by score."""
+        self._cleanup_global_heap()
         nodes = list(self._global_best_nodes.values())
         nodes.sort(key=self._rank_key, reverse=True)
         if len(nodes) > self._return_top_k:
