@@ -136,13 +136,13 @@ def load_solution_trajectory(filepath: str) -> dict:
 
     max_time = max(pt['epoch'] for pt in state_points) if state_points else 0.0
 
-    # Propagate final state for 50 years after last flyby
+    # Propagate final state for 100 years after last flyby
     propagated_positions = None
     propagated_times = None
     if state_points:
         final_state = state_points[-1]
-        print(f"Propagating final state for 50 years from t={max_time/YEAR:.2f} years...")
-        propagated_positions, propagated_times = propagate_final_state(final_state, duration_years=200.0)
+        print(f"Propagating final state for 100 years from t={max_time/YEAR:.2f} years...")
+        propagated_positions, propagated_times = propagate_final_state(final_state, duration_years=100.0)
         # Adjust times to be relative to mission start
         propagated_times = propagated_times + max_time
         print(f"Propagation complete. Final propagated time: t={propagated_times[-1]/YEAR:.2f} years")
@@ -385,11 +385,11 @@ def create_animation(
         solution_line, = ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
                 'c-', alpha=0.8, linewidth=2, label='Solution Trajectory')
 
-        # Plot the propagated trajectory (50 years after last flyby)
+        # Plot the propagated trajectory (100 years after last flyby)
         if solution_data['propagated_positions'] is not None:
             prop_pos_au = solution_data['propagated_positions'] / AU
             propagated_line, = ax.plot(prop_pos_au[:, 0], prop_pos_au[:, 1], prop_pos_au[:, 2],
-                    'm--', alpha=0.6, linewidth=1.5, label='Propagated (50 years)')
+                    'm--', alpha=0.6, linewidth=1.5, label='Propagated (100 years)')
 
     # Create scatter plots for moving bodies
     planet_scatter = ax.scatter([], [], [], c='blue', s=50, marker='o', label='Planets')
