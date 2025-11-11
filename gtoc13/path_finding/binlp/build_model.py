@@ -11,7 +11,7 @@ and run `conda install scip`.
 """
 
 from gtoc13 import DAY, SPTU, KMPDU
-from b_utils import timer, IndexParams, DVTable, lin_dots_penalty
+from gtoc13.path_finding.binlp.b_utils import timer, IndexParams, DVTable, lin_dots_penalty
 import pyomo.environ as pyo
 from math import factorial
 from typing import Optional

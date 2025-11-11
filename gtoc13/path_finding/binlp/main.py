@@ -10,8 +10,13 @@ solution sequences based on number of iterations.
 
 import logging
 from gtoc13 import bodies_data
-from b_utils import create_discrete_dataset, build_dv_table, IndexParams, SolverParams
-from problems import run_basic_problem, run_trajectory_problem
+from gtoc13.path_finding.binlp.b_utils import (
+    create_discrete_dataset,
+    build_dv_table,
+    IndexParams,
+    SolverParams,
+)
+from gtoc13.path_finding.binlp.problems import run_basic_problem, run_trajectory_problem
 
 ############### EDIT CONFIG ###############
 debug = False

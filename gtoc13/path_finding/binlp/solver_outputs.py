@@ -1,12 +1,12 @@
 from pyomo.opt import TerminationCondition, SolverFactory, SolverResults
 import pyomo.environ as pyo
-from b_utils import SolverParams, SequenceTarget, timer
+from gtoc13.path_finding.binlp.b_utils import SolverParams, SequenceTarget, timer
 from pathlib import Path
 from typing import Any
 from numpy import round
 from gtoc13 import YEAR, SPTU, KMPDU
 from pprint import pprint
-from build_model import nogood_cuts_constrs
+from gtoc13.path_finding.binlp.build_model import nogood_cuts_constrs
 from numpy import ndarray
 
 
