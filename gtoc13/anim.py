@@ -16,8 +16,10 @@ from gtoc13 import (
     AU,
     MU_ALTAIRA,
     YEAR,
-    DAY
+    DAY,
+    ballistic_ode
 )
+from scipy.integrate import solve_ivp
 
 
 def compute_orbit_points(elements: OrbitalElements, n_points: int = 100) -> np.ndarray:
@@ -64,10 +66,50 @@ def compute_orbit_points(elements: OrbitalElements, n_points: int = 100) -> np.n
     return np.array(positions) / AU
 
 
+def propagate_final_state(final_state: dict, duration_years: float = 50.0, n_points: int = 1000) -> np.ndarray:
+    """
+    Propagate the final state of a trajectory using ballistic (Keplerian) motion.
+
+    Args:
+        final_state: Dictionary containing 'position' and 'velocity' arrays in km and km/s
+        duration_years: Duration to propagate in years (default: 50.0)
+        n_points: Number of points in the propagated trajectory (default: 1000)
+
+    Returns:
+        Array of shape (n_points, 3) with propagated positions in km
+    """
+    # Initial state [x, y, z, vx, vy, vz]
+    y0 = np.concatenate([final_state['position'], final_state['velocity']])
+
+    # Time span for propagation (in seconds)
+    t_span = (0.0, duration_years * YEAR)
+    t_eval = np.linspace(0.0, duration_years * YEAR, n_points)
+
+    # Integrate using ballistic ODE (Keplerian motion)
+    # Note: ballistic_ode expects args=(mu,)
+    def ode_func(t, y):
+        return ballistic_ode(t, y, (MU_ALTAIRA,))
+
+    sol = solve_ivp(
+        ode_func,
+        t_span,
+        y0,
+        method='DOP853',  # High-order Runge-Kutta method
+        t_eval=t_eval,
+        rtol=1e-12,
+        atol=1e-12
+    )
+
+    # Extract positions (first 3 components)
+    positions = sol.y[:3, :].T  # Shape: (n_points, 3)
+
+    return positions, t_eval
+
+
 def load_solution_trajectory(filepath: str) -> dict:
     """
     Load a solution trajectory from a GTOC13 solution file.
-    Returns dict with 'state_points' list and 'max_time'.
+    Returns dict with 'state_points' list, 'max_time', and 'propagated_trajectory'.
     """
     state_points = []
 
@@ -94,9 +136,22 @@ def load_solution_trajectory(filepath: str) -> dict:
 
     max_time = max(pt['epoch'] for pt in state_points) if state_points else 0.0
 
+    # Propagate final state for 50 years after last flyby
+    propagated_positions = None
+    propagated_times = None
+    if state_points:
+        final_state = state_points[-1]
+        print(f"Propagating final state for 50 years from t={max_time/YEAR:.2f} years...")
+        propagated_positions, propagated_times = propagate_final_state(final_state, duration_years=200.0)
+        # Adjust times to be relative to mission start
+        propagated_times = propagated_times + max_time
+        print(f"Propagation complete. Final propagated time: t={propagated_times[-1]/YEAR:.2f} years")
+
     return {
         'state_points': state_points,
-        'max_time': max_time
+        'max_time': max_time,
+        'propagated_positions': propagated_positions,
+        'propagated_times': propagated_times
     }
 
 
@@ -323,11 +378,18 @@ def create_animation(
 
     # Plot solution trajectory if provided
     solution_line = None
+    propagated_line = None
     if solution_data:
         # Plot the full trajectory path (static)
         positions = np.array([pt['position'] / AU for pt in solution_data['state_points']])
         solution_line, = ax.plot(positions[:, 0], positions[:, 1], positions[:, 2],
                 'c-', alpha=0.8, linewidth=2, label='Solution Trajectory')
+
+        # Plot the propagated trajectory (50 years after last flyby)
+        if solution_data['propagated_positions'] is not None:
+            prop_pos_au = solution_data['propagated_positions'] / AU
+            propagated_line, = ax.plot(prop_pos_au[:, 0], prop_pos_au[:, 1], prop_pos_au[:, 2],
+                    'm--', alpha=0.6, linewidth=1.5, label='Propagated (50 years)')
 
     # Create scatter plots for moving bodies
     planet_scatter = ax.scatter([], [], [], c='blue', s=50, marker='o', label='Planets')
@@ -522,6 +584,8 @@ def create_animation(
             # Find spacecraft position at current time
             state_points = solution_data['state_points']
             max_solution_time = solution_data['max_time']
+            propagated_positions = solution_data['propagated_positions']
+            propagated_times = solution_data['propagated_times']
 
             if t <= max_solution_time:
                 # Interpolate position between state points
@@ -548,9 +612,35 @@ def create_animation(
                     if t <= state_points[0]['epoch']:
                         sc_pos_au = state_points[0]['position'] / AU
                         spacecraft_scatter._offsets3d = ([sc_pos_au[0]], [sc_pos_au[1]], [sc_pos_au[2]])
+            elif propagated_positions is not None and t <= propagated_times[-1]:
+                # Interpolate position in the propagated trajectory
+                # Find the two propagated points that bracket current time
+                idx = np.searchsorted(propagated_times, t)
+                if idx == 0:
+                    sc_pos = propagated_positions[0]
+                elif idx >= len(propagated_times):
+                    sc_pos = propagated_positions[-1]
+                else:
+                    # Linear interpolation between propagated points
+                    t0 = propagated_times[idx - 1]
+                    t1 = propagated_times[idx]
+                    p0 = propagated_positions[idx - 1]
+                    p1 = propagated_positions[idx]
+
+                    if t1 > t0:
+                        alpha = (t - t0) / (t1 - t0)
+                        sc_pos = p0 + alpha * (p1 - p0)
+                    else:
+                        sc_pos = p0
+
+                sc_pos_au = sc_pos / AU
+                spacecraft_scatter._offsets3d = ([sc_pos_au[0]], [sc_pos_au[1]], [sc_pos_au[2]])
             else:
-                # Keep spacecraft at final position after trajectory ends
-                final_pos = state_points[-1]['position'] / AU
+                # Keep spacecraft at final position after propagated trajectory ends
+                if propagated_positions is not None:
+                    final_pos = propagated_positions[-1] / AU
+                else:
+                    final_pos = state_points[-1]['position'] / AU
                 spacecraft_scatter._offsets3d = ([final_pos[0]], [final_pos[1]], [final_pos[2]])
 
         # Update title with current time
