@@ -82,13 +82,15 @@ class FlybyDefectComp(om.JaxExplicitComponent):
                         desc='Altitude constraint defects (parabolic)')
 
         # Store body parameters as static data
-        self._MU_BODY = jnp.zeros(N)
-        self._R_BODY = jnp.zeros(N)
+        # Default values for non-planets to avoid numerical issues.
+        self._MU_BODY = 1.0E-16 * jnp.ones(N)
+        self._R_BODY = jnp.ones(N)
 
         for i, body_id in enumerate(self.options['bodies']):
             body = bodies_data[body_id]
-            self._MU_BODY = self._MU_BODY.at[i].set(body.mu)
-            self._R_BODY = self._R_BODY.at[i].set(body.radius)
+            if body_id <= 10:
+                self._MU_BODY = self._MU_BODY.at[i].set(body.mu)
+                self._R_BODY = self._R_BODY.at[i].set(body.radius)
 
         # Convert to tuples for hashability
         self._MU_BODY = tuple(self._MU_BODY.tolist())

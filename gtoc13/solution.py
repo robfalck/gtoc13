@@ -477,7 +477,7 @@ class GTOC13Solution(BaseModel):
             self.write(stream=f, precision=precision)
 
     def plot(self, show_bodies: bool = True, figsize: tuple = (12, 10), save_path: str | Path | None = None,
-             E_end: float | None = None, int_cos_alpha_end: float | None = None, obj_value: float | None = None):
+             E_end: float | None = None, J: float | None = None):
         """
         Plot the heliocentric trajectory arcs and body orbits in the x-y plane.
 
@@ -486,8 +486,7 @@ class GTOC13Solution(BaseModel):
             figsize: Figure size (width, height) in inches
             save_path: Optional path to save the figure. If None, displays the plot.
             E_end: Final specific orbital energy (km^2/s^2)
-            int_cos_alpha_end: Integral of cos(alpha) at the end
-            obj_value: Final objective value
+            J: Final approximate GTOC objective value
 
         Returns:
             matplotlib figure and axis objects
@@ -617,12 +616,10 @@ class GTOC13Solution(BaseModel):
         ]
 
         # Add objective values if provided
-        if obj_value is not None:
-            info_lines.append(f'Objective: {obj_value:.6f}')
+        if J is not None:
+            info_lines.append(f'J: {J:.6f}')
         if E_end is not None:
             info_lines.append(f'E_end: {E_end:.6f} km²/s²')
-        if int_cos_alpha_end is not None:
-            info_lines.append(f'∫cos(α): {int_cos_alpha_end:.6f}')
 
         info_text = '\n'.join(info_lines)
         ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
