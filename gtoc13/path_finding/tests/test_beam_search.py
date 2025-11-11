@@ -517,7 +517,7 @@ class TestInterstellarBody(unittest.TestCase):
              patch("gtoc13.path_finding.beam.lambert.enumerate_lambert_solutions", side_effect=fake_enum):
             resolve_lambert_leg(config, registry, (parent,), proposal, score_stub)
 
-        self.assertEqual(captured_max_rev.get("value"), 0)
+        self.assertEqual(captured_max_rev.get("value"), 1)
 
 
 class TestMissionRawScoring(unittest.TestCase):

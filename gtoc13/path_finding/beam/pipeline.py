@@ -97,7 +97,7 @@ def make_expand_fn(
                 period_days = None
             if period_days is not None and period_days > 0.0:
                 # Minimum step of 0.5 deg of mean motion (clipped to avoid zero step).
-                min_step = max(period_days / 720.0, 1e-6)
+                min_step = max(period_days / 1440.0, 1e-6)
                 degree_count = int(math.floor(span / min_step)) + 1
                 if degree_count >= 2:
                     # Do not exceed the configured grid size, but shrink it when the degree
