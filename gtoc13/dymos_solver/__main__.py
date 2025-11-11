@@ -43,7 +43,10 @@ Examples:
   python -m gtoc13.dymos_solver --bodies 10 --flyby-times 20.0 --t0 5.0 --num-nodes 30
 
   # Specify control scheme for each arc
-  python -m gtoc13.dymos_solver --bodies 10 9 --flyby-times 20.0 40.0 --control uopt pfix
+  python -m gtoc13.dymos_solver --bodies 10 9 --flyby-times 20.0 40.0 --control 0 1
+
+  # Load a solution file as an initial guess
+  python -m gtoc13.dymos_solver --bodies 9 8 7  --flyby-times 20 40 80  --max-time 150 --controls 0 0 0 --load solutions/dymos_solution_32.txt
 """
     )
 
@@ -72,8 +75,9 @@ Examples:
         default=0.0,
         help='Initial time in years (default: 0.0)'
     )
+
     parser.add_argument(
-        '--control', '-c',
+        '--controls', '-c',
         type=int,
         nargs='+',
         metavar='CONTROL_FLAG',
@@ -96,6 +100,23 @@ Examples:
         help='If given, just run through the model once without optimization.'
     )
 
+    parser.add_argument(
+        '--max-time',
+        type=float,
+        default=199.999,
+        help='Maximum allowable final time in yeras. (default: 199.999)'
+    )
+
+    # Solver options
+    parser.add_argument(
+        '--load', '-l',
+        type=str,
+        nargs='+',
+        default=None,
+        metavar='LOAD_FILES',
+        help='File(s) from which to load the solution. If multiple, they are concatenated.'
+    )
+
     args = parser.parse_args()
 
     N = len(args.bodies)
@@ -111,15 +132,15 @@ Examples:
         sys.exit(1)
 
     # Validate control argument if provided
-    if args.control is not None:
-        if len(args.control) != len(args.bodies) and len(args.control) != 1:
-            print(f"Error: Number of control flags ({len(args.control)}) must match "
+    if args.controls is not None:
+        if len(args.controls) != len(args.bodies) and len(args.controls) != 1:
+            print(f"Error: Number of control flags ({len(args.controls)}) must match "
                     f"number of bodies ({len(args.bodies)}) if multiple are given", file=sys.stderr)
             sys.exit(1)
 
         # Validate each control value
         valid_controls = {0, 1}
-        for i, ctrl in enumerate(args.control):
+        for i, ctrl in enumerate(args.controls):
             if ctrl not in valid_controls:
                 print(f"Error: Invalid control scheme '{ctrl}' at position {i}. "
                         f"Must be one of: {', '.join(sorted(valid_controls))}", file=sys.stderr)
@@ -135,10 +156,10 @@ Examples:
     else:
         num_nodes = args.num_nodes
 
-    if args.control is None:
+    if args.controls is None:
         controls = N * [0]
-    elif len(args.control) == 1:
-        controls = N * [args.controls]
+    elif len(args.controls) == 1:
+        controls = N * [args.controls[0]]
     else:
         controls = args.controls
     
@@ -149,7 +170,8 @@ Examples:
                                            num_nodes=num_nodes,
                                            controls=controls,
                                            warm_start=False,
-                                           default_opt_prob=True)
+                                           default_opt_prob=True,
+                                           t_max=args.max_time)
     prob.setup()
     
     set_initial_guesses(prob, bodies=args.bodies, flyby_times=args.flyby_times,

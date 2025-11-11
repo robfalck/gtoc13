@@ -192,10 +192,10 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
     prob.driver.opt_settings['tol'] = 1.0E-6
 
     # Gradient-based autoscaling
-    # prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'
+    prob.driver.opt_settings['nlp_scaling_method'] = 'gradient-based'
 
     # Step-size selection
-    # prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
+    prob.driver.opt_settings['alpha_for_y'] = 'safer-min-dual-infeas'
 
     # This following block allows IPOPT to finish if it has a feasible but
     # not optimal solution for several iterations in a row.
@@ -208,7 +208,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
     prob.driver.opt_settings['acceptable_iter'] = 5  # Accept after 5 consecutive "acceptable" iterations
 
     # How to initialize the constraint bounds of the interior point method
-    # prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
+    prob.driver.opt_settings['bound_mult_init_method'] = 'mu-based'
 
     # How IPOPT changes its barrier parameter (mu) over time.
     # This problem seems to work much better with the default 'adaptive'
@@ -246,7 +246,7 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
         if guess_solution is None or len(guess_solution.arcs) < (i-1):
             guess_arc = None
         else:
-            guess_arc = guess_solution.args[i]
+            guess_arc = guess_solution.arcs[i]
         
         if guess_arc is None:
             # If we don't have a guess for this arc,
@@ -271,7 +271,33 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
             if controls[i] == 0:
                 phase.set_parameter_val('u_n', [0., 0., 0.], units='unitless')
             elif controls[i] == 1:
-                phase.set_control_val('u_n', [1., 0., 0.], units='unitless')
+                u_n = np.array([1., 0., 0.])
+                phase.set_control_val('u_n', [u_n, u_n], units='unitless')
+        
+        else:
+            # Load the solution from the arc in the existing solution as a guess
+            u = np.zeros(3)
+            if isinstance(guess_arc, PropagatedArc):
+                times_s = [state.epoch for state in guess_arc.state_points]
+                r_km = [state.position for state in guess_arc.state_points]
+                v_kms = [state.velocity for state in guess_arc.state_points]
+                u = [state.controls for state in guess_arc.state_points]
+
+            if i == 0:
+                prob.set_val('t0', times_s[0], units='s')
+                prob.set_val('y0', r_km[0, 1], units='km')
+                prob.set_val('z0', r_km[0, 2], units='km')
+
+            prob.set_val('dt', times_s[-1] - times_s[0], indices=[i])            
+            phase.set_state_val('r', vals=r_km, time_vals=times_s, units='km')
+            phase.set_state_val('v', vals=v_kms, time_vals=times_s, units='km/s')
+            phase.set_state_val('r', vals=r_km, time_vals=times_s, units='km')
+            if controls is not None:
+                try:
+                    phase.set_control_val('u_n', vals=u, time_vals=times_s, units='unitless')
+                except:
+                    phase.set_parameter_val('u_n', u, units='unitless')
+
 
     # Set the final velocity to a slightly perturbed version of the final arc
     # velocity. Setting them equal results in an infinite flyby radius.
