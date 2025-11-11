@@ -1,6 +1,12 @@
 from numpy import ndarray
-from b_utils import timer, IndexParams, SolverParams, DVTable, SequenceTarget
-from build_model import (
+from gtoc13.path_finding.binlp.b_utils import (
+    timer,
+    IndexParams,
+    SolverParams,
+    DVTable,
+    SequenceTarget,
+)
+from gtoc13.path_finding.binlp.build_model import (
     initialize_model,
     x_vars_and_constrs,
     y_vars_and_constrs,
@@ -11,7 +17,7 @@ from build_model import (
     first_arcs_constrs,
     disallow_end_position,
 )
-from solver_outputs import generate_iterative_solutions, generate_segment
+from gtoc13.path_finding.binlp.solver_outputs import generate_iterative_solutions, generate_segment
 
 
 @timer
