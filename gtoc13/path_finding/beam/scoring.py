@@ -72,8 +72,8 @@ def hohmann_tof_bounds(a1_km: float, a2_km: float, mu: float) -> Tuple[float, fl
     T_H = math.pi * math.sqrt(a_t**3 / mu)
     P1 = 2.0 * math.pi * math.sqrt(a1_km**3 / mu)
     P2 = 2.0 * math.pi * math.sqrt(a2_km**3 / mu)
-    tmin = max(0.01 * T_H, 5.0 * DAY)
-    tmax = min(3.0 * T_H, 2.0 * max(P1, P2))
+    tmin = max(0.1 * T_H, 5.0 * DAY)
+    tmax = min(1.0 * T_H, 2.0 * max(P1, P2))
     return tmin / DAY, tmax / DAY
 
 

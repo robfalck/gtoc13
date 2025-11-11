@@ -388,7 +388,7 @@ def resolve_lambert_leg(
     proposal: Any,
     score_fn: ScoreFn,
     *,
-    max_revs: int = 2,
+    max_revs: int = 1,
 ) -> Tuple[float, State]:
     """
     Solve a Lambert leg for the given proposal, evaluate each branch, and return
@@ -413,7 +413,7 @@ def resolve_lambert_leg(
 
     local_max_revs = max_revs
     if parent.body == INTERSTELLAR_BODY_ID and parent.seed_offset is not None:
-        local_max_revs = 0
+        local_max_revs = 1
 
     solutions = enumerate_lambert_solutions(
         parent.body,
