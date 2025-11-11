@@ -20,7 +20,7 @@ from numpy import float64
 
 @timer
 def initialize_model(
-    index_params: IndexParams, discrete_data: dict, flyby_history: Optional[dict]
+    index_params: IndexParams, discrete_data: dict, flyby_history: Optional[dict] = None
 ) -> pyo.ConcreteModel:
     """
     Creates indices from the inputs for variables and constraints in the problem.
@@ -49,6 +49,9 @@ def initialize_model(
     seq_model.name_k = pyo.Param(
         seq_model.K, initialize=lambda model, k: bodies[k].name, within=pyo.Any
     )
+    seq_model.period_k = pyo.Param(
+        seq_model.K, initialize=lambda model, k: bodies[k].tp_tu, within=pyo.PositiveReals
+    )
     seq_model.dv_limit_dtu = pyo.Param(
         initialize=index_params.dv_limit * float64(SPTU / KMPDU), within=pyo.PositiveReals
     )
@@ -56,6 +59,15 @@ def initialize_model(
     seq_model.gt_p = pyo.Param(initialize=index_params.gt_planets)
     seq_model.dt_tol = pyo.Param(initialize=float(DAY * 7 / SPTU), within=pyo.PositiveReals)
     if flyby_history:
+        seq_model.prev_encounter = pyo.Param(
+            seq_model.K,
+            initialize=lambda model, k: 1 if k in flyby_history.keys() else 0,
+            within=pyo.Binary,
+        )
+        seq_model.prev_fb_number = pyo.Param(
+            seq_model.K,
+            initialize=lambda model, k: len(flyby_history[k]) if k in flyby_history.keys() else 0,
+        )
         seq_model.flyby_history = pyo.Param(seq_model.K, initialize=flyby_history, within=pyo.Any)
 
     # Cartesian product sets
@@ -117,23 +129,23 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     print("...create x_k** max number of scientific flybys...")
 
-    def flyby_limit_rule(model, k):
-        if model.find_component("flyby_history"):
-            prev_flyby = len(model.flyby_history[k]) - pyo.quicksum(model.x_kih[k, :, 1])
-        else:
-            prev_flyby = 0
-        return pyo.quicksum(model.x_kih[k, ...]) + prev_flyby <= seq_model.Nk_limit
+    # def flyby_limit_rule(model, k):
+    #     if model.find_component("flyby_history"):
+    #         prev_flyby = len(model.flyby_history[k]) - pyo.quicksum(model.x_kih[k, :, 1])
+    #     else:
+    #         prev_flyby = 0
+    #     return pyo.quicksum(model.x_kih[k, ...]) + prev_flyby <= seq_model.Nk_limit
 
+    # for each k, there can only be a total of N_k flybys counted
+    # seq_model.flyby_limit = pyo.Constraint(
+    #     seq_model.K,
+    #     rule=flyby_limit_rule,
+    # )
     # for each k, there can only be a total of N_k flybys counted
     seq_model.flyby_limit = pyo.Constraint(
         seq_model.K,
-        rule=flyby_limit_rule,
+        rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) <= seq_model.Nk_limit,
     )
-    # # for each k, there can only be a total of N_k flybys counted
-    # seq_model.flyby_limit = pyo.Constraint(
-    #     seq_model.K,
-    #     rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) <= seq_model.Nk_limit,
-    # )
 
     print("...create x_*ih monotonic time constraints...")
     # for each h, the time must be greater than the previous h
@@ -156,17 +168,23 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     seq_model.monotonic_time = pyo.Constraint(seq_model.H, rule=monotime_rule)
 
     print("...create x_k*h packing constraint...")
-    # do not pick the same body k for sequential h positions
+    # do not pick the same body k for sequential h positions unless the timestep is larger than 1/3 of their period.
 
-    def nodupes_rule(model, k, h):
-        if h > 1:
-            term = pyo.quicksum(model.x_kih[k, :, h]) + pyo.quicksum(model.x_kih[k, :, h - 1]) <= 1
+    # def nodupes_rule(model, k, h):
+    #     if h > 1:
+    #         term = pyo.quicksum(model.x_kih[k, :, h]) + pyo.quicksum(model.x_kih[k, :, h - 1]) <= 1
 
-        else:
-            term = pyo.Constraint.Skip
-        return term
+    #     else:
+    #         term = pyo.Constraint.Skip
+    #     return term
 
-    seq_model.no_dupes = pyo.Constraint(seq_model.K * seq_model.H, rule=nodupes_rule)
+    # seq_model.no_dupes = pyo.Constraint(seq_model.K * seq_model.H, rule=nodupes_rule)
+    def successive_flyby(model, k, i, h):
+        if h > 1 and i > 1:
+            term = (
+                model.x_kih[k, i, h] * model.tu_ki[k, i]
+                - model.x_kih[k, i - 1, h - 1] * model.tu_ki[k, i - 1]
+            ) >= model.period_k[k] / 3
 
 
 @timer
@@ -248,24 +266,24 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
     )
 
     # if there is a flyby for body k, then there must be a first flyby for k, unless it's already in the history.
-    def z_bigm_x_history_rule(model, k):
-        if model.find_component("flyby_history"):
-            history_term = len(model.flyby_history[k])
-        else:
-            history_term = 0
-        return model.H.at(-1) * (pyo.quicksum(model.z_ki[k, :]) + history_term) >= pyo.quicksum(
-            model.x_kih[k, ...]
-        )
+    # def z_bigm_x_history_rule(model, k):
+    #     if model.find_component("flyby_history"):
+    #         history_term = len(model.flyby_history[k])
+    #     else:
+    #         history_term = 0
+    #     return model.H.at(-1) * (pyo.quicksum(model.z_ki[k, :]) + history_term) >= pyo.quicksum(
+    #         model.x_kih[k, ...]
+    #     )
 
-    seq_model.z_bigm_x = pyo.Constraint(
-        seq_model.K,
-        rule=z_bigm_x_history_rule,
-    )
     # seq_model.z_bigm_x = pyo.Constraint(
     #     seq_model.K,
-    #     rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :])
-    #     >= pyo.quicksum(model.x_kih[k, ...]),
+    #     rule=z_bigm_x_history_rule,
     # )
+    seq_model.z_bigm_x = pyo.Constraint(
+        seq_model.K,
+        rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :])
+        >= pyo.quicksum(model.x_kih[k, ...]),
+    )
     # if there are previous flybys at time i, i cannot be a first flyby
     seq_model.z_implies_not_y = pyo.Constraint(
         seq_model.KI,

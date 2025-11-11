@@ -17,7 +17,7 @@ import pykep as pk
 import plotly
 import plotly.graph_objects as go
 
-from gtoc13 import YPTU, bodies_data
+from gtoc13 import YPTU, bodies_data, Body
 
 
 np.set_printoptions(legacy="1.25")
@@ -53,6 +53,7 @@ class IndexParams:
 class DisBody:
     name: str
     weight: float
+    tp_tu: np.float32
     r_du: dict = field(
         default_factory=lambda: {
             1: np.ndarray,
@@ -148,7 +149,7 @@ def lin_dots_penalty(r_i: np.array, r_j: np.array) -> np.float32:
 
 @timer
 def create_discrete_dataset(
-    Yo: float, Yf: float, bodies_data: dict, perYear: int = 2, include_small: bool = False
+    Yo: float, Yf: float, bodies_data: dict[int:Body], perYear: int = 2, include_small: bool = False
 ) -> tuple[dict, list[int], int, np.ndarray]:
     To = float(Yo / YPTU)
     Tf = float(Yf / YPTU)  # years per TU
@@ -159,32 +160,21 @@ def create_discrete_dataset(
     k_body = []
     for b_idx, body in tqdm(bodies_data.items()):
         if not include_small:
-            if body.is_planet() or body.name == "Yandi":
-                k_body.append(b_idx)
-                dis_ephm[b_idx] = DisBody(
-                    name=body.name,
-                    weight=body.weight,
-                    r_du=np.array(
-                        [
-                            body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
-                            for idx in range(num)
-                        ]
-                    ),
-                    t_tu=timesteps,
-                )
-        else:
-            k_body.append(b_idx)
-            dis_ephm[b_idx] = DisBody(
-                name=body.name,
-                weight=body.weight,
-                r_du=np.array(
-                    [
-                        body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
-                        for idx in range(num)
-                    ]
-                ),
-                t_tu=timesteps,
-            )
+            if not (body.is_planet() or body.name == "Yandi"):
+                continue
+        k_body.append(b_idx)
+        dis_ephm[b_idx] = DisBody(
+            name=body.name,
+            weight=body.weight,
+            r_du=np.array(
+                [
+                    body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
+                    for idx in range(num)
+                ]
+            ),
+            t_tu=timesteps,
+            tp_tu=np.float32(body.get_period(units="TU")),
+        )
     return dis_ephm, k_body, num, timesteps
 
 

@@ -66,6 +66,7 @@ def run_trajectory_problem(
     return soln_segments, segment_model
 
 
+@timer
 def run_segment_problem(
     index_params: IndexParams,
     discrete_data: dict,
