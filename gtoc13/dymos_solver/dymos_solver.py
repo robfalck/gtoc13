@@ -27,7 +27,7 @@ def get_phase(num_nodes, control):
 
     ode_cls = SolarSailRadialControlODEComp if control == 'r' else SolarSailODEComp
 
-    phase = dm.Phase(ode_class=SolarSailODEComp,
+    phase = dm.Phase(ode_class=ode_cls,
                      transcription=tx)
 
     phase.add_state('r', rate_source='drdt', units='DU',
@@ -64,6 +64,7 @@ def get_phase(num_nodes, control):
     
     phase.add_timeseries_output('a_grav', units='km/s**2')
     phase.add_timeseries_output('a_sail', units='km/s**2')
+    phase.add_timeseries_output('u_n', units='unitless')
     phase.add_timeseries_output('u_n_norm', units='unitless')
 
     return phase
@@ -487,9 +488,13 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
     # phase.set_parameter_val('dt_dtau', np.asarray(dt) / 2., units='gtoc_year')
 
 
-def create_solution(prob, bodies, filename=None):
+def create_solution(prob, bodies, controls=None, filename=None):
     N = len(bodies)
-    
+
+    # Default controls to all 0 if not provided
+    if controls is None:
+        controls = [0] * N
+
     flyby_comp = prob.model.flyby_comp
 
     flyby_v_in = flyby_comp.get_val('v_in', units='km/s')
@@ -509,12 +514,22 @@ def create_solution(prob, bodies, filename=None):
         except KeyError as e:
             u_n = prob.get_val(f'traj.arc_{i}.parameters:u_n', units='unitless')
             u_n = np.broadcast_to(u_n, shape=r.shape)
-        
+
         u_n_norm = np.linalg.norm(u_n, axis=-1)
 
-        # Add the i-th propagated arc 
+        # Determine control type for this arc
+        control_value = controls[i]
+        if control_value == 'r':
+            control_type = 'radial'
+        elif control_value == 1:
+            control_type = 'optimal'
+        else:  # control_value == 0
+            control_type = 'N/A'
+
+        # Add the i-th propagated arc
         arcs.append(PropagatedArc.create(epochs=t, positions=r,
-                                         velocities=v, controls=u_n))
+                                         velocities=v, controls=u_n,
+                                         control_type=control_type))
         
         # Add the i-th flyby arc
         t_flyby_i = prob.get_val('times', units='s')[i + 1]        
@@ -529,9 +544,19 @@ def create_solution(prob, bodies, filename=None):
                                     v_inf_in=flyby_v_inf_in[i],
                                     v_inf_out=flyby_v_inf_out[i],
                                     is_science=True))
-    
+
+    # Extract objective values
+    E_end = prob.get_val('E_end')[0]
+
+    # Get the objective value (if it exists)
+    try:
+        J = prob.get_val('J')[0]
+    except KeyError:
+        J = None
+
     solution = GTOC13Solution(arcs=arcs,
-                              comments=[])
+                              comments=[],
+                              objective_J=J)
 
     # Find the next available solution filename
     solutions_dir = Path(__file__).parent.parent.parent / 'solutions'
@@ -550,12 +575,6 @@ def create_solution(prob, bodies, filename=None):
 
     solution.write_to_file(solution_file, precision=11)
     print(f"Solution written to {solution_file}")
-
-    # Extract objective values for plot
-    E_end = prob.get_val('E_end')[0]
-
-    # Get the objective value (if it exists)
-    J = prob.get_val('J')[0]
 
     # Create plot and save it
     solution.plot(show_bodies=True, save_path=plot_file,

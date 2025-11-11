@@ -210,9 +210,9 @@ Examples:
     # prob.list_problem_vars(print_arrays=True)
     result = prob.run_driver()
 
-
-    # if result.success:
-    #     sol, sol_file = create_solution(prob, args.bodies, filename=args.name)
+    # Create solution with control information
+    if result.success:
+        sol, sol_file = create_solution(prob, args.bodies, controls=controls, filename=args.name)
 
 
 if __name__ == '__main__':

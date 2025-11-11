@@ -17,8 +17,8 @@ def solar_sail_acceleration(r: jnp.ndarray, u_n: jnp.ndarray, r0: float) -> jnp.
     Returns:
         acceleration vector (km/s^2)
     """
-    r_mag = jnp.linalg.norm(r)
-    u_r = -r / r_mag  # unit vector from spacecraft to sun
+    r_mag = jnp.linalg.norm(r, axis=-1, keepdims=True)
+    u_r = -r / r_mag
     
     cos_alpha = jnp.dot(u_n, u_r)
     

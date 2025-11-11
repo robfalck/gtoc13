@@ -173,7 +173,7 @@ class SolarSailRadialControlODEComp(om.JaxExplicitComponent):
         u_n_norm : jnp.ndarray
             The magnitude of the array normal. (num_nodes,)
         """
-        r_mag = jnp.linalg.norm(r, axis=-1)
+        r_mag = jnp.linalg.norm(r, axis=-1, keepdims=True)
         u_n = -r / r_mag
 
         drdt, dvdt, a_grav, a_sail, cos_alpha = self._solar_sail_ode_vec(
@@ -182,7 +182,7 @@ class SolarSailRadialControlODEComp(om.JaxExplicitComponent):
 
         u_n_norm = jnp.linalg.norm(u_n, axis=-1)
 
-        return drdt, dvdt, a_grav, a_sail, cos_alpha, u_n_norm
+        return drdt, dvdt, a_grav, a_sail, cos_alpha, u_n, u_n_norm
 
 
 class SolarSailVectorizedODEComp(om.JaxExplicitComponent):
