@@ -76,12 +76,25 @@ Examples:
         help='Initial time in years (default: 0.0)'
     )
 
+    def control_type(value):
+        """Parse control argument: accepts 0, 1, or 'r'"""
+        if value.lower() == 'r':
+            return 'r'
+        try:
+            int_val = int(value)
+            if int_val in [0, 1]:
+                return int_val
+            else:
+                raise ValueError(f"Control must be 0, 1, or 'r', got {value}")
+        except ValueError:
+            raise ValueError(f"Control must be 0, 1, or 'r', got {value}")
+
     parser.add_argument(
         '--controls', '-c',
-        type=int,
+        type=control_type,
         nargs='+',
         metavar='CONTROL_FLAG',
-        help='Control flag for each arc: 0, 1 (space-separated, must match number of bodies)'
+        help="Control flag for each arc: 0, 1, or 'r' for radial (space-separated, must match number of bodies)"
     )
 
     # Solver options
@@ -153,7 +166,7 @@ Examples:
             sys.exit(1)
 
         # Validate each control value
-        valid_controls = {0, 1}
+        valid_controls = {0, 1, 'r'}
         for i, ctrl in enumerate(args.controls):
             if ctrl not in valid_controls:
                 print(f"Error: Invalid control scheme '{ctrl}' at position {i}. "

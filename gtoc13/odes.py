@@ -51,7 +51,7 @@ def ballistic_ode(t: float, y: jnp.ndarray, args: None) -> jnp.ndarray:
     return jnp.concatenate([v, a])
 
 
-def solar_sail_ode(r: jnp.ndarray, v: jnp.ndarray, dt_dtau: jnp.ndarray, u_n: jnp.ndarray, mu: float, r0: float) -> jnp.ndarray:
+def solar_sail_ode(r: jnp.ndarray, v: jnp.ndarray, u_n: jnp.ndarray, mu: float, r0: float) -> jnp.ndarray:
     """
     Derivatives for pure Keplerian motion (no solar sail).
     r = [x, y, z]
@@ -72,4 +72,4 @@ def solar_sail_ode(r: jnp.ndarray, v: jnp.ndarray, dt_dtau: jnp.ndarray, u_n: jn
     a_sail, cos_alpha = solar_sail_acceleration(r, u_n, r0)
     a_total = a_grav + a_sail
     
-    return v * dt_dtau, a_total * dt_dtau, a_grav, a_sail, cos_alpha
+    return v, a_total, a_grav, a_sail, cos_alpha

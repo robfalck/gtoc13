@@ -18,12 +18,14 @@ from gtoc13.dymos_solver.energy_comp import EnergyComp
 from gtoc13.dymos_solver.v_in_out_comp import VInOutComp
 from gtoc13.dymos_solver.score_comp import ScoreComp
 
-from gtoc13.dymos_solver.ode_comp import SolarSailVectorizedODEComp, SolarSailODEComp
+from gtoc13.dymos_solver.ode_comp import SolarSailRadialControlODEComp, SolarSailODEComp
 
 
 def get_phase(num_nodes, control):
     tx = dm.Birkhoff(num_nodes=num_nodes, grid_type='lgl')
     # tx = dm.PicardShooting(num_segments=1, nodes_per_seg=num_nodes, solve_segments='forward')
+
+    ode_cls = SolarSailRadialControlODEComp if control == 'r' else SolarSailODEComp
 
     phase = dm.Phase(ode_class=SolarSailODEComp,
                      transcription=tx)
@@ -47,9 +49,10 @@ def get_phase(num_nodes, control):
                         val=np.ones((3,)), targets=['u_n'])
         phase.add_path_constraint('u_n_norm', equals=1.0)
         phase.add_path_constraint('cos_alpha', lower=0.0)
-    else:
+    elif control == 0:
         phase.add_parameter('u_n', units='unitless', shape=(3,),
                             val=np.zeros((3,)), opt=False)
+   
 
     # Set time options
     # The fix_initial here is really a bit of a misnomer.
@@ -79,7 +82,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
     else:
         _num_nodes = num_nodes
 
-    if isinstance(controls, int) or len(controls) == 1:
+    if isinstance(controls, int):
         _control = N * [controls]
     else:
         _control = controls
