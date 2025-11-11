@@ -43,6 +43,7 @@ class EphemComp(om.JaxExplicitComponent):
         self.add_output('body_vel', shape=(N, 3), units='km/s', desc='Intertial velocity of each body at intercept (km/s)')
         self.add_output('dt_dtau', shape=(N,), units='gtoc_year', desc='Time span vs tau for each arc.')
         self.add_output('times', shape=(N + 1,), units='gtoc_year', desc='Times of events')
+        self.add_output('dt_out', shape=(N,), units='gtoc_year', desc='dt echoed as an output to be connected downstream.')
 
         self._ELEMENTS = jnp.zeros((N, 6))
 
@@ -112,4 +113,6 @@ class EphemComp(om.JaxExplicitComponent):
 
         dt_dtau = dt / 2.0
 
-        return event_pos, body_vel, dt_dtau, times
+        dt_out = dt
+
+        return event_pos, body_vel, dt_dtau, times, dt_out

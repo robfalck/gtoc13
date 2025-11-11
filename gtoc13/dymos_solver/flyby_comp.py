@@ -3,11 +3,19 @@ OpenMDAO component for computing flyby defects using JAX.
 """
 from collections.abc import Sequence
 
+import jax
 import jax.numpy as jnp
 import openmdao.api as om
 
 from gtoc13.astrodynamics import flyby_defects_in_out
 from gtoc13.bodies import bodies_data
+
+# Vectorize flyby_defects_in_out over all flybys
+# in_axes: (0, 0, 0, 0, 0) means vectorize over first dimension of all 5 arguments
+vectorized_flyby_defects = jax.vmap(
+    flyby_defects_in_out,
+    in_axes=(0, 0, 0, 0, 0)
+)
 
 
 class FlybyDefectComp(om.JaxExplicitComponent):
@@ -121,24 +129,16 @@ class FlybyDefectComp(om.JaxExplicitComponent):
 
         N = len(mu_body)
 
-        # Initialize output arrays
-        v_inf_in = jnp.zeros((N, 3))
-        v_inf_out = jnp.zeros((N, 3))
-        v_inf_mag_defect = jnp.zeros(N)
-        h_p_defect = jnp.zeros(N)
+        # Compute all flyby defects at once using vectorized function
+        v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect = vectorized_flyby_defects(
+            v_in, v_out, v_body, mu_body, r_body
+        )
 
-        # Compute defects for each flyby
-        for i in range(N):
-            v_inf_in_i, v_inf_out_i, v_inf_defect, h_p_def = flyby_defects_in_out(
-                v_in[i, :],
-                v_out[i, :],
-                v_body[i, :],
-                mu_body[i],
-                r_body[i]
-            )
-            v_inf_in = v_inf_in.at[i].set(v_inf_in_i)
-            v_inf_out = v_inf_out.at[i].set(v_inf_out_i)
-            v_inf_mag_defect = v_inf_mag_defect.at[i].set(v_inf_defect)
-            h_p_defect = h_p_defect.at[i].set(h_p_def)
+        # Ensure all outputs have the correct shape even when N=1
+        # JAX sometimes collapses single-element arrays to scalars
+        v_inf_in = jnp.reshape(v_inf_in, (N, 3))
+        v_inf_out = jnp.reshape(v_inf_out, (N, 3))
+        v_inf_mag_defect = jnp.reshape(v_inf_mag_defect, (N,))
+        h_p_defect = jnp.reshape(h_p_defect, (N,))
 
         return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect

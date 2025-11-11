@@ -2,7 +2,7 @@ import jax.numpy as jnp
 
 import openmdao.api as om
 
-from gtoc13.constants import MU_ALTAIRA
+from gtoc13.constants import MU_ALTAIRA, KMPDU, SPTU
 
 
 class EnergyComp(om.JaxExplicitComponent):

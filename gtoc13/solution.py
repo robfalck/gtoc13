@@ -476,7 +476,8 @@ class GTOC13Solution(BaseModel):
         with open(filepath, 'w') as f:
             self.write(stream=f, precision=precision)
 
-    def plot(self, show_bodies: bool = True, figsize: tuple = (12, 10), save_path: str | Path | None = None):
+    def plot(self, show_bodies: bool = True, figsize: tuple = (12, 10), save_path: str | Path | None = None,
+             E_end: float | None = None, int_cos_alpha_end: float | None = None, obj_value: float | None = None):
         """
         Plot the heliocentric trajectory arcs and body orbits in the x-y plane.
 
@@ -484,6 +485,9 @@ class GTOC13Solution(BaseModel):
             show_bodies: If True, plot the orbits of bodies involved in flybys
             figsize: Figure size (width, height) in inches
             save_path: Optional path to save the figure. If None, displays the plot.
+            E_end: Final specific orbital energy (km^2/s^2)
+            int_cos_alpha_end: Integral of cos(alpha) at the end
+            obj_value: Final objective value
 
         Returns:
             matplotlib figure and axis objects
@@ -545,6 +549,24 @@ class GTOC13Solution(BaseModel):
                 ax.plot(x[0], y[0], 'go', markersize=8, zorder=5)
                 ax.plot(x[-1], y[-1], 'ro', markersize=8, zorder=5)
 
+                # Plot sail normal vectors for points with non-zero control
+                import numpy as np
+                for j, pt in enumerate(arc.state_points):
+                    control_mag = np.linalg.norm(pt.control)
+                    # Only plot every 5th point to avoid clutter, and only if control is significant
+                    if j % 5 == 0 and control_mag > 1e-6:
+                        # Scale the arrow by a reasonable amount for visibility
+                        # Use 5% of the typical distance scale
+                        scale = 5e8  # Scale factor for arrow length
+                        dx = pt.control[0] * scale
+                        dy = pt.control[1] * scale
+
+                        ax.arrow(pt.position[0], pt.position[1], dx, dy,
+                                head_width=3e8, head_length=5e8,
+                                fc='red', ec='red', alpha=0.6, linewidth=1.5,
+                                label='Sail Normal' if i == 0 and j == 0 else None,
+                                zorder=4)
+
             elif isinstance(arc, FlybyArc):
                 # Mark flyby location
                 x_flyby = arc.position[0] if hasattr(arc, 'position') else None
@@ -587,9 +609,24 @@ class GTOC13Solution(BaseModel):
 
         mission_time = last_epoch / YEAR if last_epoch > 0 else 0
 
-        info_text = f'Flybys: {num_flybys}\nProp. Arcs: {num_prop_arcs}\nMission Time: {mission_time:.2f} years'
+        # Build info text with mission statistics
+        info_lines = [
+            f'Flybys: {num_flybys}',
+            f'Prop. Arcs: {num_prop_arcs}',
+            f'Mission Time: {mission_time:.2f} years'
+        ]
+
+        # Add objective values if provided
+        if obj_value is not None:
+            info_lines.append(f'Objective: {obj_value:.6f}')
+        if E_end is not None:
+            info_lines.append(f'E_end: {E_end:.6f} km²/s²')
+        if int_cos_alpha_end is not None:
+            info_lines.append(f'∫cos(α): {int_cos_alpha_end:.6f}')
+
+        info_text = '\n'.join(info_lines)
         ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
-               verticalalignment='top', fontsize=10,
+               verticalalignment='top', fontsize=9,
                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
         plt.tight_layout()

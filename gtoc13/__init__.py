@@ -118,6 +118,7 @@ __all__ = [
     "ConicArc",
     "PropagatedArc",
     "GTOC13Solution",
+    "MissionPlan",
 
     # Lambert solver
     "lambert",
