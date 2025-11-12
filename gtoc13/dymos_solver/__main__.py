@@ -231,7 +231,5 @@ Examples:
     if save:
         sol, sol_file = create_solution(prob, args.bodies, controls=controls, filename=args.name)
 
-    prob.model.flyby_comp.list_vars(print_arrays=True, units=True)
-
 if __name__ == '__main__':
     main()

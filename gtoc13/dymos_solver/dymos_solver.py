@@ -390,6 +390,8 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
             if controls is not None:
                 if 'u_n' in phase.control_options:
                     u_broadcast = np.broadcast_to(u, (len(times_relative), 3))
+                    if phase.control_options['u_n']['opt'] and np.all(np.abs(u_broadcast) < 1.0E-3):
+                        u_broadcast = np.broadcast_to([[1., 0, 0]], (len(times_relative), 3))
                     phase.set_control_val('u_n', vals=u_broadcast, time_vals=times_relative, units='unitless')
                 elif 'u_n' in phase.parameter_options:
                     phase.set_parameter_val('u_n', [0, 0, 0], units='unitless')
