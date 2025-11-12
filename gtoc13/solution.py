@@ -156,7 +156,7 @@ class ConicArc(BaseModel):
     velocity_start: Tuple[float, float, float] = Field(..., description="Start velocity (km/s)")
     velocity_end: Tuple[float, float, float] = Field(..., description="End velocity (km/s)")
     bodies: Tuple[int, int] = Field(
-        default=None,
+        default=(-1, -1),
         description="Bodies joined by this arc: (from_body, to_body). -1 indicates problem start."
     )
 
@@ -207,20 +207,22 @@ class ConicArc(BaseModel):
             position_end: End position (km)
             velocity_start: Start velocity (km/s)
             velocity_end: End velocity (km/s)
-            bodies: Bodies joined by this arc (from_body, to_body). -1 indicates problem start.
+            bodies: Bodies joined by this arc (from_body, to_body). If None, uses default (-1, -1).
 
         Returns:
             ConicArc object
         """
-        return ConicArc(
-            epoch_start=epoch_start,
-            epoch_end=epoch_end,
-            position_start=position_start,
-            position_end=position_end,
-            velocity_start=velocity_start,
-            velocity_end=velocity_end,
-            bodies=bodies
-        )
+        kwargs = {
+            'epoch_start': epoch_start,
+            'epoch_end': epoch_end,
+            'position_start': position_start,
+            'position_end': position_end,
+            'velocity_start': velocity_start,
+            'velocity_end': velocity_end,
+        }
+        if bodies is not None:
+            kwargs['bodies'] = bodies
+        return ConicArc(**kwargs)
 
 
 class PropagatedArc(BaseModel):
@@ -238,7 +240,7 @@ class PropagatedArc(BaseModel):
         description="Control type: 'radial' (sun-pointing), 'optimal' (optimized), or 'N/A' (conic/ballistic)"
     )
     bodies: Tuple[int, int] = Field(
-        default=None,
+        default=(-1, -1),
         description="Bodies joined by this arc: (from_body, to_body). -1 indicates problem start."
     )
 
@@ -287,7 +289,7 @@ class PropagatedArc(BaseModel):
             velocities: List of velocity vectors (km/s)
             controls: List of control vectors (sail normal unit vectors)
             control_type: Type of control - 'radial' (sun-pointing), 'optimal' (optimized), or 'N/A' (default: 'N/A')
-            bodies: Bodies joined by this arc (from_body, to_body) where 0 indicates heliocentric
+            bodies: Bodies joined by this arc (from_body, to_body). If None, uses default (-1, -1).
 
         Returns:
             PropagatedArc object
@@ -324,7 +326,10 @@ class PropagatedArc(BaseModel):
         #     for epoch, pos, vel, ctrl in zip(t, r, v, u)
         # ]
 
-        return PropagatedArc(state_points=state_points, control_type=control_type, bodies=bodies)
+        kwargs = {'state_points': state_points, 'control_type': control_type}
+        if bodies is not None:
+            kwargs['bodies'] = bodies
+        return PropagatedArc(**kwargs)
 
     @staticmethod
     def simulate(epochs, positions, velocities, controls):

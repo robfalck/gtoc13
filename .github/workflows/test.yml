@@ -67,6 +67,11 @@ jobs:
         # Install package in development mode
         python -m pip install -e . --no-deps
 
+    - name: Install the jax lamberthub fork
+      shell: bash -el {0}
+      run: |
+        python -m pip install git+https://github.com/robfalck/lamberthub.git@jax
+
     - name: Install dymos gtoc version
       shell: bash -el {0}
       run: |
