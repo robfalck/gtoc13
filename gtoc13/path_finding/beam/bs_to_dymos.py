@@ -10,9 +10,9 @@ from typing import Any, Sequence
 import numpy as np
 
 from gtoc13.constants import DAY, YEAR
-from gtoc13.dymos_solver.dymos_solver import (
+from gtoc13.dymos_solver.initial_guesses import set_initial_guesses
+from gtoc13.dymos_solver.solve_arcs import (
     get_dymos_serial_solver_problem,
-    set_initial_guesses,
     create_solution,
 )
 
