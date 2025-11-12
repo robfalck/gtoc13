@@ -11,3 +11,15 @@ Install the package in development mode:
 ```bash
 python -m pip install -e .
 ```
+
+Install a modified version of dymos
+
+```bash
+python -m pip install git+https://github.com/robfalck/dymos.git@gtoc13
+```
+
+Install a jax lambert solver, available as `lamberthub.vallado2013_jax`
+
+```bash
+python -m pip install git+https://github.com/robfalck/lamberthub.git@jax
+```

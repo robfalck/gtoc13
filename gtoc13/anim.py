@@ -88,7 +88,7 @@ def propagate_final_state(final_state: dict, duration_years: float = 50.0, n_poi
     # Integrate using ballistic ODE (Keplerian motion)
     # Note: ballistic_ode expects args=(mu,)
     def ode_func(t, y):
-        return ballistic_ode(t, y, (MU_ALTAIRA,))
+        return np.asarray(ballistic_ode(t, y, (MU_ALTAIRA,)))
 
     sol = solve_ivp(
         ode_func,
@@ -203,6 +203,15 @@ def create_animation(
 
     # Set up the plot limits
     max_dist = max([np.max(np.abs(orbit)) for orbit in planet_orbits]) * 1.25
+
+    # If solution is loaded, set initial zoom to show trajectory better (exclude starting point)
+    if solution_data:
+        # Get positions excluding the first few points (likely the far starting position)
+        positions = np.array([pt['position'] / AU for pt in solution_data['state_points'][5:]])
+        if len(positions) > 0:
+            traj_max = np.max(np.abs(positions)) * 1.5
+            max_dist = max(traj_max, max_dist * 0.3)  # At least 30% of planet scale
+
     initial_max_dist = max_dist
     ax.set_xlim([-max_dist, max_dist])
     ax.set_ylim([-max_dist, max_dist])

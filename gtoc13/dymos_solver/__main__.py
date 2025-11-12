@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from gtoc13.solution import GTOC13Solution
 from gtoc13.constants import YEAR
 from gtoc13.dymos_solver.dymos_solver import (
     get_dymos_serial_solver_problem,
@@ -144,6 +145,13 @@ Examples:
         help='Objective to be used. Either "J" to maximize GTOC objective or "E" to minimize final energy'
     )
 
+    parser.add_argument(
+        '--mode', '-m',
+        type=str,
+        default='opt',
+        help='Mode of operation: "opt", "feas", or "run"'
+    )
+
     args = parser.parse_args()
 
     N = len(args.bodies)
@@ -201,19 +209,27 @@ Examples:
                                            t_max=args.max_time,
                                            obj=args.obj)
     prob.setup()
-    
+
+    if args.load:
+        guess_sol = GTOC13Solution.load(args.load[0])
+    else:
+        guess_sol = None
+
     set_initial_guesses(prob, bodies=args.bodies, flyby_times=args.flyby_times,
-                        t0=args.t0, controls=controls)
+                        t0=args.t0, controls=controls, guess_solution=guess_sol)
     
-    # prob.run_model()
-    # prob.model.list_vars(print_arrays=True, units=True)
-    # prob.list_problem_vars(print_arrays=True)
-    result = prob.run_driver()
+    save = True
+    if args.mode == 'run':
+        prob.run_model()
+    elif args.mode == 'opt':
+        result = prob.run_driver()
+        save = result.success
+    elif args.mode.startswith('feas'):
+        prob.find_feasible(iprint=2)
 
     # Create solution with control information
-    if result.success:
+    if save:
         sol, sol_file = create_solution(prob, args.bodies, controls=controls, filename=args.name)
-
 
 if __name__ == '__main__':
     main()

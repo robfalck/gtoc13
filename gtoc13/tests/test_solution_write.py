@@ -59,7 +59,7 @@ class TestSolutionWrite(unittest.TestCase):
                           "Scientific notation should be used")
 
             # Verify we can read it back
-            loaded = GTOC13Solution.from_file(tmp_path)
+            loaded = GTOC13Solution.load(tmp_path)
             self.assertEqual(len(loaded.arcs), 1)
 
         finally:
