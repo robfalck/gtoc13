@@ -224,9 +224,12 @@ Examples:
         # prob.check_partials(method='fd', compact_print=True, form='central', includes='*miss_distance_comp*')
     elif args.mode == 'opt':
         result = prob.run_driver()
-        # save = result.success
+        save = result.success
     elif args.mode.startswith('feas'):
-        prob.find_feasible(iprint=2)
+        prob.find_feasible(iprint=2, method='trf')
+
+    #
+    print(f'OpenMDAO output directory: {prob.get_outputs_dir()}')
 
     # Create solution with control information
     if save:

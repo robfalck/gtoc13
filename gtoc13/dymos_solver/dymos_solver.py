@@ -32,13 +32,13 @@ def get_phase(num_nodes, control):
                      transcription=tx)
 
     phase.add_state('r', rate_source='drdt', units='DU',
-                    shape=(3,), fix_initial=True, fix_final=True,
-                    targets=['r'])
+                    shape=(3,), fix_initial=False, fix_final=False,
+                    targets=['r'], ref=10.0, defect_ref=10.0)
 
     phase.add_state('v', rate_source='dvdt', units='DU/TU',
                     shape=(3,), fix_initial=False, fix_final=False,
-                    targets=['v'], lower=-100, upper=100,
-                    ref=1.0, defect_ref=1.0E-2)
+                    targets=['v'],
+                    ref=1.0, defect_ref=1.0)
 
     # We're just going to construct this phase and return it without
     # a control, so that the calling function can handle whether
@@ -100,6 +100,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
         phase = get_phase(num_nodes=_num_nodes[i], control=_control[i])
         traj.add_phase(f'arc_{i}', phase)
 
+        # Previously we fixed the position at the ends to these, bu
         # prob.model.connect('event_pos', f'traj.arc_{i}.initial_states:r', src_indices=om.slicer[i, ...])
         # prob.model.connect('event_pos', f'traj.arc_{i}.final_states:r', src_indices=om.slicer[i+1, ...])
 
@@ -164,7 +165,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
     prob.model.add_design_var('t0', lower=0.0, units='gtoc_year')
 
     # # Times between flyby events
-    prob.model.add_design_var('dt', lower=0.0, upper=200, units='gtoc_year') 
+    prob.model.add_design_var('dt', lower=0.0, upper=200, ref=10.0, units='gtoc_year') 
 
     # # Start plane position
     prob.model.add_design_var('y0', units='DU')
@@ -176,6 +177,9 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
     # #
     # # CONSTRAINTS
     # #
+
+    # Trajectory ends must match event positions
+    prob.model.add_constraint('r_error', equals=0, units='DU', ref=0.01)
 
     # # V-infinity magnitude difference before/after each flyby
     prob.model.add_constraint('flyby_comp.v_inf_mag_defect', equals=0.0, units='km/s')
