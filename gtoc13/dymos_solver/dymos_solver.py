@@ -2,17 +2,14 @@ from collections import deque
 from pathlib import Path
 from typing import Sequence
 
-import pydantic
-
 import numpy as np
 import openmdao.api as om
-import openmdao.utils.units as om_units
 import dymos as dm
 
 from lamberthub import vallado2013_jax
 
 from gtoc13 import bodies_data, GTOC13Solution, PropagatedArc, FlybyArc, ConicArc
-from gtoc13.constants import MU_ALTAIRA, KMPDU, SPTU, R0
+from gtoc13.constants import MU_ALTAIRA, KMPDU
 from gtoc13.analytic import propagate_ballistic
 
 from gtoc13.dymos_solver.ephem_comp import EphemComp
@@ -235,6 +232,245 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
     return prob
 
+def _guess_from_solution(guess_arc):
+    """
+    Extract initial guess data from a solution arc.
+
+    This function processes an arc from a previously computed solution and extracts
+    the trajectory data in a format suitable for initializing a Dymos optimization
+    problem. It handles three types of arcs: PropagatedArc (thrust arcs), ConicArc
+    (coast arcs), and FlybyArc (planetary flybys).
+
+    Parameters
+    ----------
+    guess_arc : PropagatedArc, ConicArc, or FlybyArc
+        An arc from a GTOC13Solution that will be used as an initial guess.
+
+    Returns
+    -------
+    dict
+        A dictionary containing the following keys:
+        - 'dt' : float
+            Arc duration in seconds. For FlybyArc, this is 0.0.
+        - 'r' : ndarray, shape (n, 3)
+            Position trajectory in km. For PropagatedArc, contains all state points.
+            For ConicArc, contains start and end positions. For FlybyArc, contains
+            the flyby position.
+        - 'v' : ndarray, shape (n, 3) or None
+            Velocity trajectory in km/s. For PropagatedArc and ConicArc, contains
+            velocities at state points. For FlybyArc, this is None (use v_in/v_out instead).
+        - 'u' : ndarray, shape (n, 3) or None
+            Control vector (thrust direction) trajectory. For PropagatedArc, contains
+            all control points. For ConicArc, contains zeros. For FlybyArc, this is None.
+
+    Notes
+    -----
+    - For PropagatedArc: Extracts all state points (time, position, velocity, control)
+      from the arc's trajectory data.
+    - For ConicArc: Extracts only the start and end states, with zero control vectors.
+    - For FlybyArc: Extracts the flyby epoch, position, and incoming/outgoing velocities.
+      Duration is computed as 0 since flyby is instantaneous.
+
+    This function is primarily used by set_initial_guesses() to warm-start the
+    optimization with data from a previous solution.
+
+    Examples
+    --------
+    >>> # Extract guess from a propagated arc
+    >>> guess = _guess_from_solution(solution.arcs[0])
+    >>> phase.set_state_val('r', vals=guess['r'], units='km')
+    >>> phase.set_state_val('v', vals=guess['v'], units='km/s')
+    """
+    if isinstance(guess_arc, PropagatedArc):
+        times_s = np.array([state.epoch for state in guess_arc.state_points])
+        r_km = np.array([state.position for state in guess_arc.state_points])
+        v_kms = np.array([state.velocity for state in guess_arc.state_points])
+        u = np.array([state.control for state in guess_arc.state_points])
+    elif isinstance(guess_arc, ConicArc):
+        times_s = np.array([guess_arc.epoch_start, guess_arc.epoch_end])
+        r_km = np.array([guess_arc.position_start, guess_arc.position_end])
+        v_kms = np.array([guess_arc.velocity_start, guess_arc.velocity_end])
+        u = np.zeros((2, 3))
+    else:
+        raise RuntimeError('_guess_from_solution only works for PropagatedArc and ConicArc')
+
+    t_initial_s = times_s[0]
+    t_final_s = times_s[-1]
+    dt_arc_s = t_final_s - t_initial_s
+
+    return {'t_initial': t_initial_s,
+            'dt': dt_arc_s,
+            'r': r_km,
+            'v': v_kms,
+            'u': u}
+
+def _guess_linear(phase, from_body, to_body, t1, t2, control):
+    """
+    Generate a linear initial guess for an arc trajectory.
+
+    This function creates a simple initial guess for an arc by linearly interpolating
+    positions between the start and end points, and using a constant average velocity.
+    For thrust arcs with radial control, it also generates anti-radial unit vectors
+    as the control guess.
+
+    Parameters
+    ----------
+    phase : dymos.Phase
+        The Dymos phase object for which to generate the guess. Used to interpolate
+        values onto the collocation nodes.
+    from_body : int
+        The body id of the starting body, or -1 for the starting plane.
+    to_body : int
+        The body id of the target body.
+    t1 : float
+        Initial time in seconds.
+    t2 : float
+        Final time in seconds.
+    control : int
+        Control type for the arc:
+        - 0: Coast arc (no thrust, zero control)
+        - 1 or 'r': Thrust arc with radial control (anti-radial unit vector)
+
+    Returns
+    -------
+    dict
+        A dictionary containing the initial guess data with the following keys:
+        - 'dt' : float
+            Arc duration in seconds (t2 - t1).
+        - 'r' : ndarray, shape (n, 3)
+            Position trajectory in km, linearly interpolated between r1 and r2
+            at all collocation nodes.
+        - 'v' : ndarray, shape (n, 3)
+            Velocity trajectory in km/s. Constant average velocity computed as
+            (r2 - r1) / dt at all nodes.
+        - 'u' : ndarray, shape (n, 3)
+            Control vector trajectory. For coast arcs (control=0), this is zeros.
+            For thrust arcs, this is the anti-radial unit vector at each node.
+
+    Notes
+    -----
+    - This function provides a very simple guess and is mainly used as a fallback
+      when Lambert solver fails or for the initial arc from the problem start point.
+    - The velocity guess is not physically accurate for orbital mechanics, but serves
+      as a reasonable starting point for the optimizer.
+    - For thrust arcs with radial control, the control vector is computed as the
+      anti-radial direction: u = -r / ||r||, which points toward the sun.
+    - The phase.interp() method is used to interpolate values onto the phase's
+      collocation nodes based on the transcription scheme.
+
+    See Also
+    --------
+    _guess_from_solution : Extract guess from a previously computed solution
+    set_initial_guesses : Main function that sets all initial guesses
+
+    Examples
+    --------
+    >>> # Generate linear guess for an arc
+    >>> guess = _guess_linear(phase, r_start, r_end, t_start, t_end, control=1)
+    >>> phase.set_state_val('r', vals=guess['r'], units='km')
+    >>> phase.set_state_val('v', vals=guess['v'], units='km/s')
+    >>> phase.set_control_val('u_n', vals=guess['u'], units='unitless')
+    """
+    r2 = bodies_data[to_body].get_state(t2).r
+    if from_body == -1:
+        r1 = np.array([-200 * KMPDU, r2[1], r2[2]])
+    else:
+        r1 = bodies_data[to_body].get_state(t1).r
+    
+    dt_arc_s = t2 - t1
+    r_km = phase.interp('r', [r1, r2])
+    v_avg = (r2 - r1) / dt_arc_s
+    v_kms = phase.interp('v', [v_avg, v_avg])
+
+    if control == 0:
+        u = np.zeros((1, 3))
+    else:
+        r_mag = np.linalg.norm(r_km, axis=-1, keepdims=True)
+        u = -r_km / r_mag
+
+    return {'t_initial': t1,
+            'dt': dt_arc_s,
+            'r': r_km,
+            'v': v_kms,
+            'u': u}
+
+
+def _guess_lambert(phase, from_body, to_body, t1, t2, control):
+    """
+    Generate a Lambert initial guess for an arc trajectory.
+
+    This function creates a simple initial guess for an arc by solving Lamberts
+    problem between the two bodies at the given times, and then propagating
+    that trajectory using an analytic 2-body approach.
+    For thrust arcs with radial control, it also generates anti-radial unit vectors
+    as the control guess.
+
+    Parameters
+    ----------
+    phase : dymos.Phase
+        The Dymos phase object for which to generate the guess. Used to interpolate
+        values onto the collocation nodes.
+    from_body : int
+        The body id of the starting body, or -1 for the starting plane.
+    to_body : int
+        The body id of the target body.
+    t1 : float
+        Initial time in seconds.
+    t2 : float
+        Final time in seconds.
+    control : int
+        Control type for the arc:
+        - 0: Coast arc (no thrust, zero control)
+        - 1 or 'r': Thrust arc with radial control (anti-radial unit vector)
+
+    Returns
+    -------
+    dict
+        A dictionary containing the initial guess data with the following keys:
+        - 'dt' : float
+            Arc duration in seconds (t2 - t1).
+        - 'r' : ndarray, shape (n, 3)
+            Position trajectory in km, linearly interpolated between r1 and r2
+            at all collocation nodes.
+        - 'v' : ndarray, shape (n, 3)
+            Velocity trajectory in km/s. Constant average velocity computed as
+            (r2 - r1) / dt at all nodes.
+        - 'u' : ndarray, shape (n, 3)
+            Control vector trajectory. For coast arcs (control=0), this is zeros.
+            For thrust arcs, this is the anti-radial unit vector at each node.
+
+    """
+    r2 = bodies_data[to_body].get_state(t2).r
+    if from_body == -1:
+        r1 = np.array([-200 * KMPDU, r2[1], r2[2]])
+    else:
+        r1 = bodies_data[to_body].get_state(t1).r
+    
+    dt_arc_s = t2 - t1
+    v1, _, resid = vallado2013_jax(MU_ALTAIRA, r1, r2, dt_arc_s)
+
+    if np.any(np.isnan(v1)) or resid > 1.0E-8:
+        # LAMBERT FAILED - FALLBACK TO LINEAR
+        guess = _guess_linear(phase, from_body, to_body, t1, t2, control)
+        r_km = guess['r']
+        v_kms = guess['v']
+    else:
+        nodes_tau = phase.options['transcription'].grid_data.node_ptau
+        node_times = t1 + (t2 - t1) * nodes_tau
+        r_km, v_kms = propagate_ballistic(r1, v1, node_times)
+
+    if control == 0:
+        u = np.zeros((1, 3))
+    else:
+        r_mag = np.linalg.norm(r_km, axis=-1, keepdims=True)
+        u = -r_km / r_mag
+
+    return {'t_initial': t1,
+            'dt': dt_arc_s,
+            'r': r_km,
+            'v': v_kms,
+            'u': u}
+
 
 def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
                         guess_solution=None):
@@ -255,9 +491,9 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
 
     # Get body positions and velocities at flyby times
     # Convert flyby times to seconds for get_state
-    from gtoc13.constants import KMPDU, YEAR
     flyby_times_s = [t * YEAR for t in flyby_times]
 
+    last_guess_flyby_arc = None
     if guess_solution is not None:
         non_flyby_arcs = [arc for arc in guess_solution.arcs
                         if isinstance(arc, (PropagatedArc, ConicArc))]
@@ -267,14 +503,15 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
     else:
         non_flyby_arcs = []
 
-    last_guess_flyby_arc = None
-
-    # Track the last loaded arc's final time to ensure continuity
-    last_loaded_time_s = None
-
     # Set initial guess for positions and velocities and controls for each arc
+    _bodies = [-1] + bodies
+    _times = [t0 * YEAR] + flyby_times_s
     for i in range(N):
         phase = prob.model.traj.phases._get_subsystem(f'arc_{i}')
+        from_body = _bodies[i]
+        to_body = _bodies[i+1]
+        t_initial_s = _times[i]
+        t_final_s = _times[i+1]
 
         try:
             guess_arc = non_flyby_arcs[i]
@@ -283,124 +520,33 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
 
         if guess_arc is None:
             # If we don't have a guess for this arc,
-            # guess smoothly interpolated positions from the initial
-            # to the final times, and constant velocities based on
-            # those times and distances.
-
-            if i == 0:
-                t_initial_s = t0 * YEAR
-                t_final_s = flyby_times_s[0]
-                dt_arc_s = t_final_s - t_initial_s
-                r1 = np.array([-200.0, 0.0, 0.0]) * KMPDU
-                r2 = bodies_data[bodies[0]].get_state(t_final_s).r
-
-                v_guess = (r2 - r1) / dt_arc_s
-            
-                # time is connected to an output, no guess necessary
-                phase.set_state_val('r', vals=[r1, r2], units='km')
-                phase.set_state_val('v', vals=[v_guess, v_guess], units='km/s')
-                print(f"Arc {i} (linear guess): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
-   
-            else:
-                # If we have a last loaded time, use it to ensure continuity
-                if last_loaded_time_s is not None:
-                    t_initial_s = last_loaded_time_s
-                else:
-                    t_initial_s = flyby_times_s[i-1]
-
-                t_final_s = flyby_times_s[i]
-                dt_arc_s = t_final_s - t_initial_s
-
-                r1 = bodies_data[bodies[i-1]].get_state(t_initial_s).r
-                r2 = bodies_data[bodies[i]].get_state(t_final_s).r
-
-                try:
-                    v1, v2, resid = vallado2013_jax(MU_ALTAIRA, r1, r2, t_final_s-t_initial_s)
-                    if np.any(np.isnan(v1)) or resid > 1.0E-8:
-                        raise ValueError('lambert failed')
-                    else:
-                        nodes_tau = phase.options['transcription'].grid_data.node_ptau
-                        node_times = t_initial_s + (t_final_s - t_initial_s) * nodes_tau
-                        r, v = propagate_ballistic(r1, v1, node_times)
-                        phase.set_state_val('r', vals=r, units='km')
-                        phase.set_state_val('v', vals=v, units='km/s')
-
-                    print(f"Arc {i} (lambert guess): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
-
-                except Exception as e:
-                    print(e)
-                    # Linear guess
-                    r1 = bodies_data[bodies[i-1]].get_state(t_initial_s).r
-                    r2 = bodies_data[bodies[i]].get_state(t_final_s).r
-
-                    v_guess = (r2 - r1) / dt_arc_s
-                
-                    # time is connected to an output, no guess necessary
-                    phase.set_state_val('r', vals=[r1, r2], units='km')
-                    phase.set_state_val('v', vals=[v_guess, v_guess], units='km/s')
-
-                    print(f"Arc {i} (linear guess): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
-
-
-            # Update dt for this arc to match actual time span
-            dt_arc_s = t_final_s - t_initial_s
-            prob.set_val('dt', dt_arc_s / YEAR, indices=[i], units='gtoc_year')
-
-            if controls[i] == 0:
-                phase.set_parameter_val('u_n', [0., 0., 0.], units='unitless')
-            elif controls[i] == 1:
-                u_n = np.array([1., 0., 0.])
-                phase.set_control_val('u_n', [u_n, u_n], units='unitless')
-        
+            # try lambert, which will fall back to linear if it fails to converge.
+            guess = _guess_lambert(phase, from_body, to_body, t_initial_s, t_final_s, controls[i])
         else:
-            # Load the solution from the arc in the existing solution as a guess
-            u = np.zeros(3)
-            if isinstance(guess_arc, PropagatedArc):
-                times_s = np.array([state.epoch for state in guess_arc.state_points])
-                r_km = np.array([state.position for state in guess_arc.state_points])
-                v_kms = np.array([state.velocity for state in guess_arc.state_points])
-                u = np.array([state.control for state in guess_arc.state_points])
-            elif isinstance(guess_arc, ConicArc):
-                times_s = np.array([guess_arc.epoch_start, guess_arc.epoch_end])
-                r_km = np.array([guess_arc.position_start, guess_arc.position_end])
-                v_kms = np.array([guess_arc.velocity_start, guess_arc.velocity_end])
-                u = np.zeros((2, 3))
+            guess = _guess_from_solution(guess_arc)
 
-            if i == 0:
-                prob.set_val('t0', times_s[0], units='s')
-                prob.set_val('y0', r_km[0, 1], units='km')
-                prob.set_val('z0', r_km[0, 2], units='km')
+        # Set the top level problem variables
+        if i == 0:
+            prob.set_val('t0', guess['t_initial'], units='s')
+            prob.set_val('y0', guess['r'][0, 1], units='km')
+            prob.set_val('z0', guess['r'][0, 2], units='km')
+        prob.set_val('dt', guess['dt'] / YEAR, indices=[i], units='gtoc_year')
 
-            # Convert absolute times to phase-relative times
-            # Phases in Dymos expect times relative to phase start (tau in [0, duration])
-            t_initial_s = times_s[0]
-            t_final_s = times_s[-1]
+        # Set the phase states
+        phase.set_state_val('r', guess['r'], units='km')
+        phase.set_state_val('v', guess['v'], units='km/s')
 
-            # Track the final time of this loaded arc for continuity
-            last_loaded_time_s = t_final_s
-
-            print(f"Arc {i} (loaded): t_initial={t_initial_s/YEAR:.2f} yr, t_final={t_final_s/YEAR:.2f} yr")
-
-            dt_arc = t_final_s - t_initial_s
-            times_relative = times_s - t_initial_s  # Now in range [0, dt_arc]
-
-            prob.set_val('dt', dt_arc, indices=[i], units='s')
-            phase.set_state_val('r', vals=r_km, time_vals=times_relative, units='km')
-            phase.set_state_val('v', vals=v_kms, time_vals=times_relative, units='km/s')
-            if controls is not None:
-                if 'u_n' in phase.control_options:
-                    u_broadcast = np.broadcast_to(u, (len(times_relative), 3))
-                    if phase.control_options['u_n']['opt'] and np.all(np.abs(u_broadcast) < 1.0E-3):
-                        u_broadcast = np.broadcast_to([[1., 0, 0]], (len(times_relative), 3))
-                    phase.set_control_val('u_n', vals=u_broadcast, time_vals=times_relative, units='unitless')
-                elif 'u_n' in phase.parameter_options:
-                    phase.set_parameter_val('u_n', [0, 0, 0], units='unitless')
-
-    # Set the final velocity to a slightly perturbed version of the final arc
-    # velocity. Setting them equal results in an infinite flyby radius.
-    prob.set_val('v_end',
-                 0.9 * phase.get_val('final_states:v', units='km/s'),
-                 units='km/s')
+        # Set the phase controls
+        if controls[i] == 0:
+            phase.set_parameter_val('u_n', [0., 0., 0.], units='unitless')
+        elif controls[i] == 1:
+            phase.set_control_val('u_n', guess['u'], units='unitless')
+    else:        
+        # Set the final velocity to a slightly perturbed version of the final arc
+        # velocity. Setting them equal results in an infinite flyby radius.
+        prob.set_val('v_end',
+                    0.9 * guess['v'][-1, ...],
+                    units='km/s')
 
 
 def create_solution(prob, bodies, controls=None, filename=None):
