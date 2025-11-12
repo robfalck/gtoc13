@@ -216,7 +216,7 @@ class TestKeyFn(unittest.TestCase):
         self.assertEqual(key_a[0], key_b[0])
         self.assertEqual(key_a[1], key_b[1])
 
-    def test_vinf_percentage_bins(self):
+    def test_vinf_coarse_bins(self):
         def make_enc(vinf: float, t: float = 0.0) -> Encounter:
             return Encounter(
                 body=1,
@@ -234,20 +234,20 @@ class TestKeyFn(unittest.TestCase):
                 J_total=0.0,
             )
 
-        key_low = key_fn((make_enc(0.5),))
-        key_low_b = key_fn((make_enc(0.9),))
-        self.assertEqual(key_low, key_low_b)
+        key_sub1 = key_fn((make_enc(0.5),))
+        key_sub1_b = key_fn((make_enc(0.9),))
+        self.assertEqual(key_sub1, key_sub1_b)
 
-        key_baseline = key_fn((make_enc(1.0),))
-        key_within_pct = key_fn((make_enc(1.05),))
-        self.assertEqual(key_baseline, key_within_pct)
+        key_one = key_fn((make_enc(1.0),))
+        key_mid_bin = key_fn((make_enc(1.3),))
+        self.assertEqual(key_one, key_mid_bin)
 
-        key_outside_pct = key_fn((make_enc(1.3),))
-        self.assertNotEqual(key_baseline, key_outside_pct)
+        key_next_bin = key_fn((make_enc(2.1),))
+        self.assertNotEqual(key_one, key_next_bin)
 
-        key_v10 = key_fn((make_enc(10.0),))
-        key_v12 = key_fn((make_enc(12.0),))
-        self.assertNotEqual(key_v10, key_v12)
+        key_pre10 = key_fn((make_enc(9.0),))
+        key_post10 = key_fn((make_enc(10.1),))
+        self.assertNotEqual(key_pre10, key_post10)
 
 
 class TestInterstellarBody(unittest.TestCase):
@@ -375,7 +375,7 @@ class TestInterstellarBody(unittest.TestCase):
         self.assertTrue(post_seed_props)
         self.assertTrue(all(not prop.is_seed for prop in post_seed_props))
 
-    def test_key_fn_distinguishes_seed_offsets(self):
+    def test_key_fn_ignores_seed_offsets(self):
         base_state = Encounter(
             body=INTERSTELLAR_BODY_ID,
             t=0.0,
@@ -403,7 +403,7 @@ class TestInterstellarBody(unittest.TestCase):
         )
         key_a = key_fn((offset_a,))
         key_b = key_fn((offset_b,))
-        self.assertNotEqual(key_a, key_b)
+        self.assertEqual(key_a, key_b)
 
     def test_seed_prunes_large_transverse_vinf(self):
         config = make_lambert_config(dv_max=None, vinf_max=None, tof_max_days=None, dv_mode="fixed")
@@ -430,7 +430,7 @@ class TestInterstellarBody(unittest.TestCase):
                  "gtoc13.path_finding.beam.lambert.enumerate_lambert_solutions",
                  return_value=[
                      {
-                         "v1": np.array([0.0, 4.0, 4.0]),
+                         "v1": np.array([0.0, 20.0, 25.0]),
                          "v2": np.zeros(3),
                          "r1": np.zeros(3),
                          "r2": np.zeros(3),
@@ -517,7 +517,7 @@ class TestInterstellarBody(unittest.TestCase):
              patch("gtoc13.path_finding.beam.lambert.enumerate_lambert_solutions", side_effect=fake_enum):
             resolve_lambert_leg(config, registry, (parent,), proposal, score_stub)
 
-        self.assertEqual(captured_max_rev.get("value"), 1)
+        self.assertEqual(captured_max_rev.get("value"), 0)
 
 
 class TestMissionRawScoring(unittest.TestCase):

@@ -20,13 +20,15 @@ Vec3 = Tuple[float, float, float]
 # ---------------------------------------------------------------------------
 
 DEPTH_BONUS_SCALE = 0.16  # medium, depth
-NOVELTY_BONUS_SCALE = 0.1  # medium, depth, simple
+NOVELTY_BONUS_SCALE = 0.5  # medium, depth, simple
 CONTINUATION_SLACK_WEIGHT = 0.7  # medium
 CONTINUATION_GENTLE_WEIGHT = 0.3  # medium
 DEPTH_MODE_ALPHA = 0.35  # depth
 DEPTH_MODE_REPEAT_FACTOR = 0.7  # depth
 DEPTH_MODE_QUICK_RATIO = 0.6  # depth
 DEPTH_MODE_QUICK_BONUS_SCALE = 0.1  # depth
+PLANET_VISIT_BONUS = 0.2  # additive bonus when visiting planets
+PLANET_NOVELTY_BONUS = 1.0  # extra bonus the first time a planet is visited
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +212,11 @@ def score_leg_medium(
     if tof_days <= 0.0:
         return 0.0, child
 
+    body = bodies_data.get(child.body)
     weight = registry.weights.get(child.body)
     if weight is None:
-        body = bodies_data.get(child.body)
         weight = float(getattr(body, "weight", 0.0)) if body is not None else 0.0
+    is_planet = bool(getattr(body, "mu", 0.0) > 0.0) if body is not None else False
 
     r_vec = np.asarray(child.r, dtype=float)
     r_norm = np.linalg.norm(r_vec)
@@ -263,8 +266,13 @@ def score_leg_medium(
     novelty_factor = (
         1.0 + NOVELTY_BONUS_SCALE * weight if child.body not in visited_bodies else 1.0
     )
+    is_new_planet = is_planet and (child.body not in visited_bodies)
 
     increment = base * continuation_factor * depth_factor * novelty_factor
+    if is_planet:
+        increment += PLANET_VISIT_BONUS
+    if is_new_planet:
+        increment += PLANET_NOVELTY_BONUS
     updated_child = replace(child, J_total=parent.J_total + increment)
     return increment, updated_child
 
@@ -280,6 +288,7 @@ def score_leg_simple(
     tof_days = float(getattr(meta.proposal, "tof", 0.0))
     if tof_days <= 0.0:
         return 0.0, child
+    body = bodies_data.get(child.body)
     weight = registry.weights.get(child.body, 0.0)
     vinf_mag = child.vinf_in or 0.0
     if vinf_mag <= 0.0 and meta.vinf_in_vec is not None:
@@ -289,8 +298,14 @@ def score_leg_simple(
     depth_index = len(prefix)
     depth_bonus = DEPTH_BONUS_SCALE * max(1.0, float(depth_index))
     visited_bodies = {enc.body for enc in prefix}
-    novelty_bonus = NOVELTY_BONUS_SCALE * weight if child.body not in visited_bodies else 0.0
+    is_planet = body is not None and getattr(body, "mu", 0.0) > 0.0
+    is_new_visit = child.body not in visited_bodies
+    novelty_bonus = NOVELTY_BONUS_SCALE * weight if is_new_visit else 0.0
     increment = base + depth_bonus + novelty_bonus
+    if is_planet:
+        increment += PLANET_VISIT_BONUS
+    if is_planet and is_new_visit:
+        increment += PLANET_NOVELTY_BONUS
     updated_child = replace(child, J_total=parent.J_total + increment)
     return increment, updated_child
 
@@ -306,6 +321,7 @@ def score_leg_depth(
     tof_days = float(getattr(meta.proposal, "tof", 0.0))
     if tof_days <= 0.0:
         return 0.0, child
+    body = bodies_data.get(child.body)
     weight = registry.weights.get(child.body, 0.0)
     vinf_mag = child.vinf_in or 0.0
     if vinf_mag <= 0.0 and meta.vinf_in_vec is not None:
@@ -328,10 +344,16 @@ def score_leg_depth(
             quick_bonus = DEPTH_MODE_QUICK_BONUS_SCALE * weight
 
     visited_bodies = {enc.body for enc in prefix}
-    novelty_bonus = NOVELTY_BONUS_SCALE * weight if child.body not in visited_bodies else 0.0
-    repeat_factor = 1.0 if child.body not in visited_bodies else DEPTH_MODE_REPEAT_FACTOR
+    is_planet = body is not None and getattr(body, "mu", 0.0) > 0.0
+    is_new_visit = child.body not in visited_bodies
+    novelty_bonus = NOVELTY_BONUS_SCALE * weight if is_new_visit else 0.0
+    repeat_factor = 1.0 if is_new_visit else DEPTH_MODE_REPEAT_FACTOR
 
     incremental = base * depth_multiplier * repeat_factor + quick_bonus + novelty_bonus
+    if is_planet:
+        incremental += PLANET_VISIT_BONUS
+    if is_planet and is_new_visit:
+        incremental += PLANET_NOVELTY_BONUS
     updated_child = replace(child, J_total=parent.J_total + incremental)
     return incremental, updated_child
 
