@@ -17,6 +17,8 @@ from .scoring import SCORING_FUNCTIONS, hohmann_bounds_for_bodies
 
 Vec3 = Tuple[float, float, float]
 
+MAX_LEG_TOF_DAYS = 100.0 * YEAR / DAY  # absolute per-leg upper bound
+
 
 @dataclass(frozen=True, slots=True)
 class Proposal:
@@ -97,7 +99,7 @@ def make_expand_fn(
                 period_days = None
             if period_days is not None and period_days > 0.0:
                 # Minimum step of 0.5 deg of mean motion (clipped to avoid zero step).
-                min_step = max(period_days / 1440.0, 1e-6)
+                min_step = max(period_days / 720.0, 1e-6)
                 degree_count = int(math.floor(span / min_step)) + 1
                 if degree_count >= 2:
                     # Do not exceed the configured grid size, but shrink it when the degree
@@ -107,6 +109,21 @@ def make_expand_fn(
                     # Span smaller than the angular step: just evaluate endpoints.
                     count = 2
             return np.linspace(tmin, tmax, count)
+
+        def _clip_to_budget(bounds: Tuple[float, float]) -> Optional[Tuple[float, float]]:
+            tmin, tmax = bounds
+            tmax = min(tmax, MAX_LEG_TOF_DAYS)
+            if tmax <= tmin or tmax <= 0.0:
+                return None
+            if config.tof_max_days is None:
+                return (tmin, tmax)
+            remaining = config.tof_max_days - current_time
+            if remaining <= 0.0:
+                return None
+            clipped_max = min(tmax, remaining)
+            if clipped_max <= tmin or clipped_max <= 0.0:
+                return None
+            return (tmin, clipped_max)
 
         for tgt in registry.body_ids:
             if tgt == last_body:
@@ -118,18 +135,26 @@ def make_expand_fn(
                     continue
                 tmin = max(1e-6, 0.4 * period_days)
                 tmax = 4.0 * period_days
+                clipped = _clip_to_budget((tmin, tmax))
+                if clipped is None:
+                    continue
+                tmin, tmax = clipped
                 grid = _build_tof_grid(tgt, tmin, tmax, samples_same)
                 if grid is None:
                     continue
             else:
                 if last_body == INTERSTELLAR_BODY_ID:
-                    tmin = 5.0 * YEAR / DAY
-                    tmax = 100.0 * YEAR / DAY
+                    tmin = 15.0 * YEAR / DAY
+                    tmax = 60.0 * YEAR / DAY
                 else:
                     try:
                         tmin, tmax = hohmann_bounds_for_bodies(last_body, tgt, registry)
                     except ValueError:
                         continue
+                clipped = _clip_to_budget((tmin, tmax))
+                if clipped is None:
+                    continue
+                tmin, tmax = clipped
                 grid = _build_tof_grid(tgt, tmin, tmax, registry.tof_sample_count)
                 if grid is None:
                     continue
@@ -207,25 +232,42 @@ def key_fn(state: State) -> Hashable:
         period_days = _orbit_period_days(last.body)
     except ValueError:
         period_days = 0.0
-    bin_width = max(1.0, 0.05 * period_days) if period_days > 0.0 else 10.0
-    origin = 0.0
-    tof_bin = int(math.floor((last.t - origin) / bin_width))
+    #bin_width = max(1.0, period_days * (2.0 / 360.0)) if period_days > 0.0 else 10.0
+    #origin = 0.0
+    #tof_bin = int(math.floor((last.t - origin) / bin_width))
+    # Geometry + coarse absolute time (protects timing diversity)
+    if period_days > 0.0:
+        phase_deg     = (last.t % period_days) * (360.0 / period_days)
+        phase_bin     = int(phase_deg // 2.0)     # 2° geometry bin
+        orbit_index   = int(last.t // period_days)
+        orbit_bucket  = min(orbit_index, 2)       # 0, 1, 2+ (coarse absolute time)
+        tof_key = (phase_bin, orbit_bucket)
+    else:
+        tof_key = int(last.t // 10.0)
     vinf = -1.0 if last.vinf_in is None else last.vinf_in
     if vinf <= 0.0:
         vinf_bin = -1
     elif vinf < 1.0:
         vinf_bin = 0
+    elif vinf < 2.0:
+        vinf_bin = 1
+    elif vinf < 5.0:
+        vinf_bin = 2
+    elif vinf < 10.0:
+        vinf_bin = 3
+    elif vinf < 20.0:
+        vinf_bin = 4
+    elif vinf < 30.0:
+        vinf_bin = 5
+    elif vinf < 50.0:
+        vinf_bin = 6
     else:
-        ratio = math.log(vinf / 1.0) / math.log(1.1)
-        vinf_bin = 1 + int(math.floor(ratio))
+        vinf_bin = 7
     visited_bodies = tuple(sorted({enc.body for enc in state}))
-    tail_bodies = tuple(enc.body for enc in state[-2:])
-    offset = getattr(last, "seed_offset", None)
-    if offset is None:
-        offset_key = None
-    else:
-        offset_key = tuple(round(float(x), 6) for x in offset)
-    return (last.body, visited_bodies, tail_bodies, tof_bin, vinf_bin, bin_width, offset_key)
+    tail_bodies = tuple(enc.body for enc in state[-3:])
+    # Key combines: current body, set of visited bodies (orderless), last three bodies
+    # in order, 5-degree TOF bucket, fixed-width v∞ bucket, and the bin width used.
+    return (last.body, visited_bodies, tail_bodies, tof_key, vinf_bin, len(state))
 
 
 __all__ = ["Proposal", "Vec3", "make_expand_fn", "make_score_fn", "key_fn", "BoundScoreFunction"]

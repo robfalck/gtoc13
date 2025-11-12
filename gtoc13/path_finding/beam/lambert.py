@@ -14,6 +14,8 @@ from gtoc13.astrodynamics import patched_conic_flyby
 from .config import BodyRegistry, LambertConfig, DEFAULT_DV_FACTOR
 from .dv_limits import max_transfer_dv_solar_sail
 
+MIN_DYNAMIC_DV_CAP_KM_S = 0.25
+
 # ---------------------------------------------------------------------------
 # Shared data structures
 # ---------------------------------------------------------------------------
@@ -248,14 +250,12 @@ def _requires_low_perihelion(
 
     nu1 = _true_anomaly(r1)
     nu2 = _true_anomaly(r2)
-    if math.isclose(nu1, nu2, abs_tol=1e-9):
+    dnu = (nu2 - nu1) % (2.0 * math.pi)
+    if math.isclose(dnu, 0.0, abs_tol=1e-9):
         return False
 
-    wraps_peri = nu2 < nu1
-    if not wraps_peri:
-        return False
-
-    return True
+    wraps_peri = dnu > (2.0 * math.pi - nu1)
+    return wraps_peri
 
 
 def _unit_vector(vec: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -388,7 +388,7 @@ def resolve_lambert_leg(
     proposal: Any,
     score_fn: ScoreFn,
     *,
-    max_revs: int = 1,
+    max_revs: int = 0,
 ) -> Tuple[float, State]:
     """
     Solve a Lambert leg for the given proposal, evaluate each branch, and return
@@ -413,7 +413,7 @@ def resolve_lambert_leg(
 
     local_max_revs = max_revs
     if parent.body == INTERSTELLAR_BODY_ID and parent.seed_offset is not None:
-        local_max_revs = 1
+        local_max_revs = 0
 
     solutions = enumerate_lambert_solutions(
         parent.body,
@@ -438,7 +438,7 @@ def resolve_lambert_leg(
         if parent.body == INTERSTELLAR_BODY_ID and parent.seed_offset is not None:
             # Limit lateral (y/z) components of the outbound v∞ when departing from seeded Interstellar starts.
             transverse_vinf = float(np.linalg.norm(vinf_out_vec[1:]))
-            if transverse_vinf >= 5.0:
+            if transverse_vinf >= 15.0:
                 continue
         vinf_cap = config.vinf_max
         if (
@@ -489,6 +489,8 @@ def resolve_lambert_leg(
                     tof_days,
                     factor=float(factor),
                 )
+            if dv_cap is not None:
+                dv_cap = max(dv_cap, MIN_DYNAMIC_DV_CAP_KM_S)
             if dv_cap is not None and config.dv_max is not None:
                 dv_cap = min(dv_cap, config.dv_max)
         else:
