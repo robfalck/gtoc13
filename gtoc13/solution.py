@@ -841,9 +841,12 @@ class GTOC13Solution(BaseModel):
                     raise ValueError("Conic arc must have at least 2 points")
                 pt_next = state_points[i + 1]
 
-                # Infer bodies: from previous flyby (or -1) to next flyby
+                # Infer bodies: from previous flyby (or -1) to next flyby (or -1)
                 from_body = find_previous_flyby_body(i)
                 to_body = find_next_flyby_body(i)
+                # If no next flyby, use -1 to indicate end/unknown
+                if to_body is None:
+                    to_body = -1
 
                 arcs.append(ConicArc(
                     epoch_start=pt.epoch,
@@ -866,9 +869,12 @@ class GTOC13Solution(BaseModel):
                     prop_points.append(state_points[i])
                     i += 1
 
-                # Infer bodies: from previous flyby (or -1) to next flyby
+                # Infer bodies: from previous flyby (or -1) to next flyby (or -1)
                 from_body = find_previous_flyby_body(prop_start_idx)
                 to_body = find_next_flyby_body(prop_start_idx)
+                # If no next flyby, use -1 to indicate end/unknown
+                if to_body is None:
+                    to_body = -1
 
                 arcs.append(PropagatedArc(state_points=prop_points, bodies=(from_body, to_body)))
 
