@@ -53,11 +53,6 @@ class EphemComp(om.JaxExplicitComponent):
 
         self._MU = MU_ALTAIRA
         
-        # Set check_partials options for finite differencing
-        # Use relative step size because ephemeris data has limited resolution
-        # A 1% relative step ensures adequate resolution for derivative checks
-        self.set_check_partial_options(wrt='time', method='fd', step_calc='rel', step=0.01)
-
     def get_self_statics(self):
         """
         self._ELEMENTS is effectively a static input to the compute_primal

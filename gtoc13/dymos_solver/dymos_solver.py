@@ -13,11 +13,11 @@ from gtoc13.constants import MU_ALTAIRA, KMPDU
 from gtoc13.analytic import propagate_ballistic
 
 from gtoc13.dymos_solver.ephem_comp import EphemComp
-from gtoc13.dymos_solver.v_concat_comp import VConcatComp
 from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
 from gtoc13.dymos_solver.energy_comp import EnergyComp
 from gtoc13.dymos_solver.v_in_out_comp import VInOutComp
 from gtoc13.dymos_solver.score_comp import ScoreComp
+from gtoc13.dymos_solver.miss_distance_comp import MissDisanceComp
 
 from gtoc13.dymos_solver.ode_comp import SolarSailRadialControlODEComp, SolarSailODEComp
 
@@ -100,14 +100,18 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
         phase = get_phase(num_nodes=_num_nodes[i], control=_control[i])
         traj.add_phase(f'arc_{i}', phase)
 
-        prob.model.connect('event_pos', f'traj.arc_{i}.initial_states:r', src_indices=om.slicer[i, ...])
-        prob.model.connect('event_pos', f'traj.arc_{i}.final_states:r', src_indices=om.slicer[i+1, ...])
+        # prob.model.connect('event_pos', f'traj.arc_{i}.initial_states:r', src_indices=om.slicer[i, ...])
+        # prob.model.connect('event_pos', f'traj.arc_{i}.final_states:r', src_indices=om.slicer[i+1, ...])
 
         phase.set_simulate_options(times_per_seg=50, atol=1.0E-12, rtol=1.0E-12)
 
         prob.model.connect('times', f'traj.arc_{i}.t_initial', src_indices=[i])
         prob.model.connect('dt_out', f'traj.arc_{i}.t_duration', src_indices=[i])
 
+    prob.model.add_subsystem('miss_distance_comp',
+                             MissDisanceComp(N=N),
+                             promotes_inputs=['event_pos'],
+                             promotes_outputs=['r_error'])
     prob.model.add_subsystem('v_in_out_comp', VInOutComp(N=N), promotes_inputs=['v_end'])
 
     for i in range(N):
@@ -118,6 +122,14 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
         
         prob.model.connect(f'traj.arc_{i}.timeseries.v', 
                            f'v_in_out_comp.arc_{i}_v_final',
+                           src_indices=om.slicer[-1, ...])
+        
+        prob.model.connect(f'traj.arc_{i}.timeseries.r', 
+                           f'miss_distance_comp.arc_{i}_r_initial',
+                           src_indices=om.slicer[0, ...])
+        
+        prob.model.connect(f'traj.arc_{i}.timeseries.r', 
+                           f'miss_distance_comp.arc_{i}_r_final',
                            src_indices=om.slicer[-1, ...])
 
     prob.model.add_subsystem('flyby_comp', FlybyDefectComp(bodies=bodies))
@@ -132,7 +144,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
     prob.model.add_subsystem('energy_comp', EnergyComp(),
                              promotes_inputs=['v_end', 'r_end'],
-                             promotes_outputs=['E_end', 'hz_end'])
+                             promotes_outputs=['E_end'])
     prob.model.connect('event_pos', 'r_end', src_indices=om.slicer[-1, ...])
 
     prob.model.add_subsystem('score_comp',

@@ -208,7 +208,7 @@ Examples:
                                            default_opt_prob=True,
                                            t_max=args.max_time,
                                            obj=args.obj)
-    prob.setup()
+    prob.setup(force_alloc_complex=True)
 
     if args.load:
         guess_sol = GTOC13Solution.load(args.load[0])
@@ -221,9 +221,10 @@ Examples:
     save = True
     if args.mode == 'run':
         prob.run_model()
+        # prob.check_partials(method='fd', compact_print=True, form='central', includes='*miss_distance_comp*')
     elif args.mode == 'opt':
         result = prob.run_driver()
-        save = result.success
+        # save = result.success
     elif args.mode.startswith('feas'):
         prob.find_feasible(iprint=2)
 
