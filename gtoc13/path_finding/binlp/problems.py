@@ -15,7 +15,7 @@ from gtoc13.path_finding.binlp.build_model import (
     grand_tour_vars_and_constrs,
     objective_fnc,
     first_arcs_constrs,
-    disallow_end_position,
+    disallow_constrs,
 )
 from gtoc13.path_finding.binlp.solver_outputs import generate_iterative_solutions, generate_segment
 
@@ -109,7 +109,7 @@ def run_segment_problem(
 
     if disallowed:
         print(">>>>> SET UP DISALLOWED END TARGETS CONSTRAINTS >>>>>\n")
-        disallow_end_position(segment_model, disallowed)
+        disallow_constrs(segment_model, disallowed)
         print("<<<<< DISALLOWED END TARGETS ADDED <<<<<\n")
     print("<<<<< MODEL SETUP COMPLETE <<<<<")
 

@@ -47,6 +47,7 @@ class IndexParams:
     first_arcs: Optional[None | list[int | tuple[int, tuple[int, int]]]] = (
         None  # integer of body, or body with bounds on timesteps
     )
+    disallowed: Optional[None | list[tuple[int, str]]] = None  # str = 'end' or 'all'
 
 
 @dataclass

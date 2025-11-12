@@ -13,27 +13,27 @@ from gtoc13.path_finding.binlp.b_utils import (
 from gtoc13.path_finding.binlp.problems import run_segment_problem
 
 ############### CONFIG 1 ###############
-shift = 0
-input_dict_1 = dict(Yo=3 + shift, Yf=13 + shift, perYear=3, bodies_data=bodies_data)
+input_dict_1 = dict(Yo=30, Yf=50, perYear=2, bodies_data=bodies_data)
 discrete_data_1, k_body_1, num_1, timesteps_1 = create_discrete_dataset(**input_dict_1)
 dv_table_1 = build_dv_table(k_body_1, timesteps_1)
 pidxs_params_1 = IndexParams(
     bodies_ID=k_body_1,
     n_timesteps=num_1,
     seq_length=5,
-    flyby_limit=4,
+    flyby_limit=1,
     gt_planets=5,
-    dv_limit=125.0,  # km/s
-    first_arcs=[4],
+    dv_limit=20.0,  # km/s
+    # first_arcs=[10, (9, 8, 7), (9, 8, 7)],
+    # disallowed=[(10,"end")]
 )
 solv_params_1 = SolverParams(
     solver_name="scip",  # AMPL-format solvers
-    soln_gap=0.15,
+    soln_gap=0.1,
 )
 ###########################################
 
 segment_1, flyby_history, seg_model_1 = run_segment_problem(
-    pidxs_params_1, discrete_data_1, solv_params_1, dv_table_1, disallowed=10
+    pidxs_params_1, discrete_data_1, solv_params_1, dv_table_1
 )
 
 # ############### CONFIG 2 ###############
