@@ -80,17 +80,27 @@ class FlybyDefectComp(om.JaxExplicitComponent):
                         desc='V-infinity magnitude defects')
         self.add_output('h_p_defect', shape=(N,), units='unitless',
                         desc='Altitude constraint defects (parabolic)')
+        self.add_output('delta', shape=(N,), units='rad',
+                        desc='Turn angle')
+        self.add_output('dv', shape=(N, 3), units='km/s',
+                        desc='Inertial delta-V from flyby')
 
         # Store body parameters as static data
         # Default values for non-planets to avoid numerical issues.
         self._MU_BODY = 1.0E-16 * jnp.ones(N)
         self._R_BODY = jnp.ones(N)
 
+        massless_idxs = []
         for i, body_id in enumerate(self.options['bodies']):
             body = bodies_data[body_id]
             if body_id <= 10:
                 self._MU_BODY = self._MU_BODY.at[i].set(body.mu)
                 self._R_BODY = self._R_BODY.at[i].set(body.radius)
+            else:
+                massless_idxs.append(i)
+
+        if massless_idxs:
+            self.add_constraint('dv', equals=0, units='km/s', indices=om.slicer[massless_idxs, ...])
 
         # Convert to tuples for hashability
         self._MU_BODY = tuple(self._MU_BODY.tolist())
@@ -132,7 +142,7 @@ class FlybyDefectComp(om.JaxExplicitComponent):
         N = len(mu_body)
 
         # Compute all flyby defects at once using vectorized function
-        v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect = vectorized_flyby_defects(
+        v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect, delta, dv = vectorized_flyby_defects(
             v_in, v_out, v_body, mu_body, r_body
         )
 
@@ -143,4 +153,4 @@ class FlybyDefectComp(om.JaxExplicitComponent):
         v_inf_mag_defect = jnp.reshape(v_inf_mag_defect, (N,))
         h_p_defect = jnp.reshape(h_p_defect, (N,))
 
-        return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect
+        return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect, delta, dv
