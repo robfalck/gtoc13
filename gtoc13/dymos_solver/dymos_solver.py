@@ -542,11 +542,17 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
         elif controls[i] == 1:
             phase.set_control_val('u_n', guess['u'], units='unitless')
     else:        
-        # Set the final velocity to a slightly perturbed version of the final arc
-        # velocity. Setting them equal results in an infinite flyby radius.
-        prob.set_val('v_end',
-                    0.9 * guess['v'][-1, ...],
-                    units='km/s')
+        # If the last arc is in the guess, use that flyby v_out as v_end.
+        # Otherwise, the final velocity to a slightly perturbed version
+        # of the final arc velocity. Setting them equal results in an infinite flyby radius.
+        if guess_arc is not None:
+            prob.set_val('v_end',
+                         guess_solution.arcs[-1].velocity_out,
+                         units='km/s')
+        else:
+            prob.set_val('v_end',
+                        0.9 * guess['v'][-1, ...],
+                        units='km/s')
 
 
 def create_solution(prob, bodies, controls=None, filename=None):
