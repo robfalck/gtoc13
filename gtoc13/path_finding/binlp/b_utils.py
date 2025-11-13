@@ -13,6 +13,7 @@ from tqdm import tqdm
 import numpy as np
 from numpy.linalg import norm
 import pykep as pk
+from lamberthub import izzo2015
 
 import plotly
 import plotly.graph_objects as go
@@ -190,23 +191,42 @@ def min_dv_lam(
     if debug:
         print(tof, state_ki)
 
-    cw = pk.lambert_problem(
-        r1=np.array(r_ki, dtype=np.float64),
-        r2=np.array(r_mj, dtype=np.float64),
-        tof=np.float64(tof),
-        cw=True,
-        max_revs=0,
+    pro = izzo2015(
+        1,
+        np.array(r_ki, dtype=np.float64),
+        np.array(r_mj, dtype=np.float64),
+        np.float64(tof),
+        prograde=True,
+        low_path=True,
     )
-    ccw = pk.lambert_problem(
-        r1=np.array(r_ki, dtype=np.float64),
-        r2=np.array(r_mj, dtype=np.float64),
-        tof=np.float64(tof),
-        cw=False,
-        max_revs=0,
+    retro = izzo2015(
+        1,
+        np.array(r_ki, dtype=np.float64),
+        np.array(r_mj, dtype=np.float64),
+        np.float64(tof),
+        prograde=False,
+        low_path=True,
     )
-    dvs_cw = norm(cw.get_v1()[0] - np.array(v_ki)) + norm(cw.get_v2()[0] - np.array(v_mj))
-    dvs_ccw = norm(ccw.get_v1()[0] - np.array(v_ki)) + norm(ccw.get_v2()[0] - np.array(v_mj))
-    min_dv = min(dvs_cw, dvs_ccw)
+    dv_pro = norm(pro[0] - np.array(v_ki)) + norm(pro[1] - np.array(v_mj))
+    dv_retro = norm(retro[0] - np.array(v_ki)) + norm(retro[1] - np.array(v_mj))
+    min_dv = min(dv_pro, dv_retro)
+    # cw = pk.lambert_problem(
+    #     r1=np.array(r_ki, dtype=np.float64),
+    #     r2=np.array(r_mj, dtype=np.float64),
+    #     tof=np.float64(tof),
+    #     cw=True,
+    #     max_revs=0,
+    # )
+    # ccw = pk.lambert_problem(
+    #     r1=np.array(r_ki, dtype=np.float64),
+    #     r2=np.array(r_mj, dtype=np.float64),
+    #     tof=np.float64(tof),
+    #     cw=False,
+    #     max_revs=0,
+    # )
+    # dvs_cw = norm(cw.get_v1()[0] - np.array(v_ki)) + norm(cw.get_v2()[0] - np.array(v_mj))
+    # dvs_ccw = norm(ccw.get_v1()[0] - np.array(v_ki)) + norm(ccw.get_v2()[0] - np.array(v_mj))
+    # min_dv = min(dvs_cw, dvs_ccw)
     return min_dv
 
 
