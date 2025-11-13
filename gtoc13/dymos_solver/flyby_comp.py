@@ -78,8 +78,8 @@ class FlybyDefectComp(om.JaxExplicitComponent):
                         desc='Outgoing V-infinity vector')
         self.add_output('v_inf_mag_defect', shape=(N,), units='km/s',
                         desc='V-infinity magnitude defects')
-        self.add_output('h_p_defect', shape=(N,), units='unitless',
-                        desc='Altitude constraint defects (parabolic)')
+        self.add_output('h_p_norm', shape=(N,), units='unitless',
+                        desc='Normalized flyby altitude.')
         self.add_output('delta', shape=(N,), units='rad',
                         desc='Turn angle')
         self.add_output('dv', shape=(N, 3), units='km/s',
@@ -142,7 +142,7 @@ class FlybyDefectComp(om.JaxExplicitComponent):
         N = len(mu_body)
 
         # Compute all flyby defects at once using vectorized function
-        v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect, delta, dv = vectorized_flyby_defects(
+        v_inf_in, v_inf_out, v_inf_mag_defect, h_p_norm, delta, dv = vectorized_flyby_defects(
             v_in, v_out, v_body, mu_body, r_body
         )
 
@@ -151,6 +151,6 @@ class FlybyDefectComp(om.JaxExplicitComponent):
         v_inf_in = jnp.reshape(v_inf_in, (N, 3))
         v_inf_out = jnp.reshape(v_inf_out, (N, 3))
         v_inf_mag_defect = jnp.reshape(v_inf_mag_defect, (N,))
-        h_p_defect = jnp.reshape(h_p_defect, (N,))
+        h_p_norm = jnp.reshape(h_p_norm, (N,))
 
-        return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_defect, delta, dv
+        return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_norm, delta, dv

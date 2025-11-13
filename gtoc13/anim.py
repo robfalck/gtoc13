@@ -424,6 +424,11 @@ def create_animation(
                          verticalalignment='top',
                          bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
 
+    # Add text for displaying nearest body (below time text)
+    nearest_text = fig.text(0.02, 0.80, '', fontsize=11, family='monospace',
+                           verticalalignment='top',
+                           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+
     # Add text for displaying selected body info
     info_text = fig.text(0.02, 0.05, '', fontsize=10, family='monospace',
                          verticalalignment='bottom',
@@ -528,13 +533,14 @@ def create_animation(
         if spacecraft_scatter:
             spacecraft_scatter._offsets3d = ([], [], [])
         time_text.set_text('')
+        nearest_text.set_text('')
         info_text.set_text('')
         time_rate_state['current_time'] = 0.0
         time_rate_state['last_frame'] = 0
         for label in planet_labels:
             label.set_position((0, 0))
             label.set_3d_properties(0)
-        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text, info_text] + planet_labels
+        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text, nearest_text, info_text] + planet_labels
         if spacecraft_scatter:
             artists.append(spacecraft_scatter)
         return artists
@@ -661,6 +667,8 @@ def create_animation(
         rate = time_rate_state['rate']
         paused = time_rate_state['paused']
         pause_str = " [PAUSED]" if paused else ""
+
+        # Update time display
         time_text.set_text(
             f'Epoch: {t:.2f} s\n'
             f'Time:  {time_years:.2f} years\n'
@@ -668,7 +676,42 @@ def create_animation(
             f'Rate:  {rate:.4f}x{pause_str}'
         )
 
-        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text, info_text] + planet_labels
+        # If spacecraft is present, find nearest body and update separate text
+        if spacecraft_scatter and solution_data:
+            # Get spacecraft position
+            sc_offset = spacecraft_scatter._offsets3d
+            if sc_offset and len(sc_offset[0]) > 0:
+                sc_pos_au = np.array([sc_offset[0][0], sc_offset[1][0], sc_offset[2][0]])
+
+                # Compute distances to all bodies (in AU)
+                all_bodies = planets + asteroids + comets
+                all_positions = np.vstack([planet_pos, asteroid_pos, comet_pos])
+
+                # Compute distances in AU
+                distances = np.linalg.norm(all_positions - sc_pos_au, axis=1)
+                nearest_idx = np.argmin(distances)
+                nearest_body = all_bodies[nearest_idx]
+                nearest_dist_au = distances[nearest_idx]
+
+                # Set color based on distance (red if close, black otherwise)
+                if nearest_dist_au < 0.1:
+                    nearest_text.set_color('darkred')
+                    nearest_text.set_text(
+                        f'Nearest: {nearest_body.name} ({nearest_body.id})\n'
+                        f'         {nearest_dist_au:.6f} AU'
+                    )
+                else:
+                    nearest_text.set_color('black')
+                    nearest_text.set_text(
+                        f'Nearest: {nearest_body.name} ({nearest_body.id})\n'
+                        f'         {nearest_dist_au:.4f} AU'
+                    )
+            else:
+                nearest_text.set_text('')
+        else:
+            nearest_text.set_text('')
+
+        artists = [planet_scatter, asteroid_scatter, comet_scatter, time_text, nearest_text, info_text] + planet_labels
         if spacecraft_scatter:
             artists.append(spacecraft_scatter)
         return artists
