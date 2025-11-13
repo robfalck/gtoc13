@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 import numpy as np
 from numpy.linalg import norm
-import pykep as pk
+
 from lamberthub import izzo2015
 
 import plotly
@@ -45,6 +45,7 @@ class IndexParams:
     flyby_limit: int
     gt_planets: int
     dv_limit: Optional[float]
+    dv_match_tol: float = 1.0  # km/s
     first_arcs: Optional[None | list[int | tuple[int, tuple[int, int]]]] = (
         None  # integer of body, or body with bounds on timesteps
     )
@@ -71,10 +72,10 @@ class DisBody:
 
 @dataclass
 class DVTable:
-    tofs: dict = field(
-        default_factory=lambda: {tuple[int, int, int, int]: float}
-    )  # {kimj: {tof: float, dv: float}
-    dvs: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    tofs: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})  # {kimj: {tof: float, dv: float}
+    # dv_tot: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    dv_in: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    dv_out: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
 
 
 @dataclass
@@ -169,10 +170,7 @@ def create_discrete_dataset(
             name=body.name,
             weight=body.weight,
             r_du=np.array(
-                [
-                    body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
-                    for idx in range(num)
-                ]
+                [body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r for idx in range(num)]
             ),
             t_tu=timesteps,
             tp_tu=np.float32(body.get_period(units="TU")),
@@ -180,9 +178,7 @@ def create_discrete_dataset(
     return dis_ephm, k_body, num, timesteps
 
 
-def min_dv_lam(
-    k: int, ti: float, m: int, tof: float, debug: bool = False
-) -> tuple[pk.lambert_problem, pk.lambert_problem]:
+def min_dv_lam(k: int, ti: float, m: int, tof: float, debug: bool = False) -> dict:
     tj = tof + ti
     state_ki = bodies_data[k].get_state(ti, time_units="TU", distance_units="DU")
     state_mj = bodies_data[m].get_state(tj, time_units="TU", distance_units="DU")
@@ -207,33 +203,24 @@ def min_dv_lam(
         prograde=False,
         low_path=True,
     )
-    dv_pro = norm(pro[0] - np.array(v_ki)) + norm(pro[1] - np.array(v_mj))
-    dv_retro = norm(retro[0] - np.array(v_ki)) + norm(retro[1] - np.array(v_mj))
-    min_dv = min(dv_pro, dv_retro)
-    # cw = pk.lambert_problem(
-    #     r1=np.array(r_ki, dtype=np.float64),
-    #     r2=np.array(r_mj, dtype=np.float64),
-    #     tof=np.float64(tof),
-    #     cw=True,
-    #     max_revs=0,
-    # )
-    # ccw = pk.lambert_problem(
-    #     r1=np.array(r_ki, dtype=np.float64),
-    #     r2=np.array(r_mj, dtype=np.float64),
-    #     tof=np.float64(tof),
-    #     cw=False,
-    #     max_revs=0,
-    # )
-    # dvs_cw = norm(cw.get_v1()[0] - np.array(v_ki)) + norm(cw.get_v2()[0] - np.array(v_mj))
-    # dvs_ccw = norm(ccw.get_v1()[0] - np.array(v_ki)) + norm(ccw.get_v2()[0] - np.array(v_mj))
-    # min_dv = min(dvs_cw, dvs_ccw)
-    return min_dv
+    dv_p = dict(dv_out=norm(pro[0] - np.array(v_ki)), dv_in=norm(pro[1] - np.array(v_mj)))
+    dv_r = dict(dv_out=norm(retro[0] - np.array(v_ki)), dv_in=norm(retro[1] - np.array(v_mj)))
+    pro_tot = dv_p["dv_out"] + dv_p["dv_in"]
+    retro_tot = dv_r["dv_out"] + dv_r["dv_in"]
+    if pro_tot <= retro_tot:
+        return dv_p
+    else:
+        return dv_r
+
+    # min_dv = min(dv_pro, dv_retro)
+    # return min_dv
 
 
 @timer
 def build_dv_table(body_list: list[int], timesteps: np.ndarray):
     tof_dict = {}
-    dv_dict = {}
+    dv_in_dict = {}
+    dv_out_dict = {}
     for kimj in tqdm(
         [
             (k, i, m, j)
@@ -247,9 +234,11 @@ def build_dv_table(body_list: list[int], timesteps: np.ndarray):
         k, i, m, j = kimj
         tof = timesteps[j] - timesteps[i]
         if tof >= 0:
-            dv_dict[(k, i + 1, m, j + 1)] = min_dv_lam(k, timesteps[i], m, tof)
+            dvs = min_dv_lam(k, timesteps[i], m, tof)
+            dv_out_dict[(k, i + 1, m, j + 1)] = dvs["dv_out"]
+            dv_in_dict[(k, i + 1, m, j + 1)] = dvs["dv_in"]
             tof_dict[(k, i + 1, m, j + 1)] = tof
-    dv_table = DVTable(tofs=tof_dict, dvs=dv_dict)
+    dv_table = DVTable(tofs=tof_dict, dv_in=dv_in_dict, dv_out=dv_out_dict)
     return dv_table
 
 
@@ -302,6 +291,4 @@ def plot_porkchop(
     else:
         output_path = Path.cwd() / "outputs"
         output_path.mkdir(exist_ok=True)
-        plotly.offline.plot(
-            fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False
-        )
+        plotly.offline.plot(fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False)

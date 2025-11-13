@@ -25,9 +25,7 @@ def run_solver(
     results = solver.solve(
         model,
         tee=solver_params.toconsole,
-        options={"limits/gap": solver_params.soln_gap}
-        if solver_params.solver_name == "scip"
-        else None,
+        options={"limits/gap": solver_params.soln_gap} if solver_params.solver_name == "scip" else None,
         logfile=output_path / f"solverlog_{iter}.txt" if solver_params.write_log else None,
     )
     return results, solver
@@ -67,7 +65,7 @@ def process_arcs(model: pyo.ConcreteModel, short_sequence: list[tuple[int, int]]
             [
                 short_sequence.index((k, i)) + 1,
                 f"({k}, {i}) to ({m}, {j})",
-                f"dv_tot: {round(model.dv_kimj[k, i, m, j] * KMPDU / SPTU, 3)}",
+                f"dv_tot: {round((model.dvout_kimj[k, i, m, j] + model.dvin_kimj[k, i, m, j]) * KMPDU / SPTU, 3)}",
             ]
             for (k, i, m, j), v in model.L_kimj.items()
             if pyo.value(v) > 0.5
@@ -114,9 +112,7 @@ def process_flybys(
 
 
 @timer
-def generate_iterative_solutions(
-    model: pyo.ConcreteModel, solver_params: SolverParams
-) -> list[list[SequenceTarget]]:
+def generate_iterative_solutions(model: pyo.ConcreteModel, solver_params: SolverParams) -> list[list[SequenceTarget]]:
     print(f">>>>> RUN SOLVER FOR {solver_params.solv_iter} ITERATIONS(S) >>>>>")
     for iter in range(solver_params.solv_iter):
         print(f"...solving iteration {iter + 1}...")
