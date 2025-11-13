@@ -26,6 +26,21 @@ from gtoc13.dymos_solver.solve_arcs import (
     create_solution,
     solve_arcs
 )
+from gtoc13.dymos_solver.add_arc import add_arc
+
+
+def control_type(value):
+    """Parse control argument: accepts 0, 1, or 'r'"""
+    if value.lower() == 'r':
+        return 'r'
+    try:
+        int_val = int(value)
+        if int_val in [0, 1]:
+            return int_val
+        else:
+            raise ValueError(f"Control must be 0, 1, or 'r', got {value}")
+    except ValueError:
+        raise ValueError(f"Control must be 0, 1, or 'r', got {value}")
 
 
 def _setup_solve_arcs_parser(subparsers):
@@ -87,19 +102,6 @@ Examples:
         default=0.0,
         help='Initial time in years (default: 0.0)'
     )
-
-    def control_type(value):
-        """Parse control argument: accepts 0, 1, or 'r'"""
-        if value.lower() == 'r':
-            return 'r'
-        try:
-            int_val = int(value)
-            if int_val in [0, 1]:
-                return int_val
-            else:
-                raise ValueError(f"Control must be 0, 1, or 'r', got {value}")
-        except ValueError:
-            raise ValueError(f"Control must be 0, 1, or 'r', got {value}")
 
     solve_arcs_parser.add_argument(
         '--controls', '-c',
@@ -202,6 +204,33 @@ Examples:
         help='Path to the existing solution file to extend'
     )
 
+    add_arc_parser.add_argument(
+        '--body',
+        type=int,
+        help='Next flyby body to be added.'
+    )
+
+    add_arc_parser.add_argument(
+        '--flyby-dt',
+        type=int,
+        help='Flight time to get to next body (yr)'
+    )
+
+    add_arc_parser.add_argument(
+        '--control', '-c',
+        type=control_type,
+        default=0,
+        help="Control flag for each arc: 0, 1, or 'r' for radial (space-separated, must match number of bodies)"
+    )
+
+    # Solver options
+    add_arc_parser.add_argument(
+        '--num-nodes', '-n',
+        type=int,
+        default=20,
+        help='Number of collocation nodes per arc (default: 20)'
+    )
+
     # Optional arguments
     add_arc_parser.add_argument(
         '--max-time',
@@ -260,9 +289,8 @@ def main():
 
     # Route to appropriate command handler
     if args.command == 'add_arc':
-        print("Error: add_arc command not yet implemented", file=sys.stderr)
-        sys.exit(1)
-    
+        add_arc(args)
+
     elif args.command == 'solve_arcs':
         solve_arcs(args)
 

@@ -325,6 +325,14 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
         if controls[i] == 0:
             phase.set_parameter_val('u_n', [0., 0., 0.], units='unitless')
         elif controls[i] == 1:
+            # If we've changed any controls to optimal but they
+            # were 0 before, we need to set the guess so that the optimizer
+            # starts with something reasonable.
+            if np.all(np.abs(guess['u']) < 1.0E-2):
+                r_mag = np.linalg.norm(guess['r'], axis=-1, keepdims=True)
+                r_hat = guess['r'] / r_mag
+                guess['u'] = -r_hat
+
             phase.set_control_val('u_n', guess['u'], units='unitless')
     else:
         # If the last arc is in the guess, use that flyby v_out as v_end.

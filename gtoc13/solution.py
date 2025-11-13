@@ -312,20 +312,6 @@ class PropagatedArc(BaseModel):
             for epoch, pos, vel, ctrl in zip(epochs, positions, velocities, controls)
         ]
 
-        # t, r, v, u = PropagatedArc.simulate(epochs, positions, velocities, controls)
-
-        # state_points = [
-        #     StatePoint(
-        #         body_id=0,
-        #         flag=1,
-        #         epoch=epoch,
-        #         position=pos,
-        #         velocity=vel,
-        #         control=ctrl
-        #     )
-        #     for epoch, pos, vel, ctrl in zip(t, r, v, u)
-        # ]
-
         kwargs = {'state_points': state_points, 'control_type': control_type}
         if bodies is not None:
             kwargs['bodies'] = bodies
@@ -351,15 +337,15 @@ class PropagatedArc(BaseModel):
         interp_u0 = BarycentricInterpolator(epochs.flatten(), controls[:, 0].flatten())
         interp_u1 = BarycentricInterpolator(epochs.flatten(), controls[:, 1].flatten())
         interp_u2 = BarycentricInterpolator(epochs.flatten(), controls[:, 2].flatten())
-  
+
         def _sim_ode(t, y):
             r = y[:3]
             v = y[-3:]
             u_n = np.hstack([interp_u0(t), interp_u1(t), interp_u2(t)])
 
             r_mag = np.linalg.norm(r)
-            
-            a_grav = -MU_ALTAIRA * r / r_mag**3    
+
+            a_grav = -MU_ALTAIRA * r / r_mag**3
             a_sail, cos_alpha = solar_sail_acceleration(r, u_n, 1.0)
             a_total = a_grav #+ a_sail
 
@@ -876,6 +862,20 @@ class GTOC13Solution(BaseModel):
                 if to_body is None:
                     to_body = -1
 
-                arcs.append(PropagatedArc(state_points=prop_points, bodies=(from_body, to_body)))
+                r_km = np.array([s.position for s in prop_points])
+                u = np.array([s.control for s in prop_points])
+                if np.all(np.abs(u) < 1.0E-2):
+                    control_type = 'N/A'
+                else:
+                    r_hat = r_km / np.linalg.norm(r_km, axis=-1, keepdims=True)
+                    u_hat = u / np.linalg.norm(u, axis=-1, keepdims=True)
+                    if np.all(np.abs(r_hat + u_hat) < 1.0E-2):
+                        control_type = 'radial'
+                    else:
+                        control_type = 'optimal'
+
+                arcs.append(PropagatedArc(state_points=prop_points,
+                                          control_type=control_type,
+                                          bodies=(from_body, to_body)))
 
         return arcs

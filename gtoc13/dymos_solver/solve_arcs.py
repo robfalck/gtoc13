@@ -52,7 +52,7 @@ def get_phase(num_nodes, control):
     elif control == 0:
         phase.add_parameter('u_n', units='unitless', shape=(3,),
                             val=np.zeros((3,)), opt=False)
-   
+
 
     # Set time options
     # The fix_initial here is really a bit of a misnomer.
@@ -61,7 +61,7 @@ def get_phase(num_nodes, control):
     phase.set_time_options(fix_initial=True,
                            fix_duration=True,
                            units='TU', )
-    
+
     phase.add_timeseries_output('a_grav', units='km/s**2')
     phase.add_timeseries_output('a_sail', units='km/s**2')
     phase.add_timeseries_output('u_n', units='unitless')
@@ -74,6 +74,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
                                     num_nodes=20,
                                     warm_start=False,
                                     default_opt_prob=True,
+                                    opt_initial=True,
                                     t_max=199.999,
                                     obj='J'):
     N = len(bodies)
@@ -121,19 +122,19 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
     for i in range(N):
         if i > 0:
-            prob.model.connect(f'traj.arc_{i}.timeseries.v', 
+            prob.model.connect(f'traj.arc_{i}.timeseries.v',
                             f'v_in_out_comp.arc_{i}_v_initial',
                             src_indices=om.slicer[0, ...])
-        
-        prob.model.connect(f'traj.arc_{i}.timeseries.v', 
+
+        prob.model.connect(f'traj.arc_{i}.timeseries.v',
                            f'v_in_out_comp.arc_{i}_v_final',
                            src_indices=om.slicer[-1, ...])
-        
-        prob.model.connect(f'traj.arc_{i}.timeseries.r', 
+
+        prob.model.connect(f'traj.arc_{i}.timeseries.r',
                            f'miss_distance_comp.arc_{i}_r_initial',
                            src_indices=om.slicer[0, ...])
-        
-        prob.model.connect(f'traj.arc_{i}.timeseries.r', 
+
+        prob.model.connect(f'traj.arc_{i}.timeseries.r',
                            f'miss_distance_comp.arc_{i}_r_final',
                            src_indices=om.slicer[-1, ...])
 
@@ -141,10 +142,10 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
     prob.model.connect('v_in_out_comp.flyby_v_in',
                        'flyby_comp.v_in')
-    
+
     prob.model.connect('v_in_out_comp.flyby_v_out',
                        'flyby_comp.v_out')
-    
+
     prob.model.connect('body_vel', 'flyby_comp.v_body')
 
     prob.model.add_subsystem('energy_comp', EnergyComp(),
@@ -163,17 +164,20 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
     # #
     # # DESIGN VARIABLES
-    # # 
+    # #
 
-    # # Start time
-    prob.model.add_design_var('t0', lower=0.0, units='gtoc_year')
+    if opt_initial:
+        # # Start time
+        prob.model.add_design_var('t0', lower=0.0, units='gtoc_year')
+        # # Start plane position
+        prob.model.add_design_var('y0', units='DU')
+        prob.model.add_design_var('z0', units='DU')
+        # # A constraint on in y and z components of the initial velocity vector
+        prob.model.traj.phases.arc_0.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
+
 
     # # Times between flyby events
-    prob.model.add_design_var('dt', lower=0.0, upper=200, ref=10.0, units='gtoc_year') 
-
-    # # Start plane position
-    prob.model.add_design_var('y0', units='DU')
-    prob.model.add_design_var('z0', units='DU')
+    prob.model.add_design_var('dt', lower=0.0, upper=200, ref=10.0, units='gtoc_year')
 
     # # Outgoing inertial velocity after last flyby
     prob.model.add_design_var('v_end', units='DU/TU')
@@ -187,25 +191,22 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
     # # V-infinity magnitude difference before/after each flyby
     prob.model.add_constraint('flyby_comp.v_inf_mag_defect', equals=0.0, units='km/s')
-    
+
     # # Periapsis Altitude Constraint for Each flyby
     # # Note that this is a quadratic equation that is negative between the
     # # allowable flyby normalized altitude values, so it just has to be negative.
     # ONLY ADD HPDEFECT TO THOSE ROWS THAT ARE PLANET FLYBYS
     planet_flyby_idxs = np.where(np.asarray(bodies, dtype=int) <= 10)[0]
     if len(planet_flyby_idxs) > 0:
-        prob.model.add_constraint('flyby_comp.h_p_defect', 
+        prob.model.add_constraint('flyby_comp.h_p_norm',
                                 indices=planet_flyby_idxs,
-                                upper=0.0, ref=1000.0)
+                                lower=0.1, upper=100.0)
 
     # # Make sure the final time is in the allowable span.
     if obj.lower() != 't':
         prob.model.add_constraint('times', indices=[-1], upper=t_max, units='gtoc_year')
 
     # prob.model.add_constraint('hz_end', lower=2.0, units='DU**2/TU')
-
-    # # A constraint on in y and z components of the initial velocity vector
-    prob.model.traj.phases.arc_0.add_boundary_constraint('v', loc='initial', indices=[1, 2], equals=0.0)
 
     # # TODO: Add a path constraint for perihelion distance.
 
@@ -214,9 +215,6 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
     # #
 
     # # Minimize specific orbital energy after the last flyby
-    # # TODO: Convert to problem objective.
-
-    # prob.model.add_objective('E_end')
     if obj.lower() == 'e':
         prob.model.add_objective('E_end', ref=1.0, units='DU**2/TU**2')
     elif obj.lower() == 't':
@@ -302,11 +300,11 @@ def create_solution(prob, bodies, controls=None, filename=None):
                                          control_type=control_type,
                                          bodies=arc_bodies))
         arc_bodies.pop
-        
-        # Add the i-th flyby arc
-        t_flyby_i = prob.get_val('times', units='s')[i + 1]        
 
-        # For now assume we never repeat a body more than 12 times, so 
+        # Add the i-th flyby arc
+        t_flyby_i = prob.get_val('times', units='s')[i + 1]
+
+        # For now assume we never repeat a body more than 12 times, so
         # each flyby is for science.
         arcs.append(FlybyArc.create(body_id=bodies[i],
                                     epoch=t_flyby_i,
@@ -400,7 +398,7 @@ def solve_arcs(args):
         controls = N * [args.controls[0]]
     else:
         controls = args.controls
-    
+
     t0 = np.array(args.t0).reshape((1,))
     dt = np.diff(np.concatenate((t0, args.flyby_times)))
 
@@ -420,7 +418,7 @@ def solve_arcs(args):
 
     set_initial_guesses(prob, bodies=args.bodies, flyby_times=args.flyby_times,
                         t0=args.t0, controls=controls, guess_solution=guess_sol)
-    
+
     save = True
     if args.mode == 'run':
         prob.run_model()
@@ -437,4 +435,3 @@ def solve_arcs(args):
     # Create solution with control information
     if save:
         sol, sol_file = create_solution(prob, args.bodies, controls=controls, filename=args.name)
-
