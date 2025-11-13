@@ -15,7 +15,6 @@ class TestFlybyDefectComp(unittest.TestCase):
         """Test FlybyDefectComp with a single flyby."""
         # Use body 10 (Planet X)
         bodies = [10]
-        body = bodies_data[10]
 
         prob = om.Problem()
         prob.model.add_subsystem('flyby', FlybyDefectComp(bodies=bodies),
@@ -52,7 +51,7 @@ class TestFlybyDefectComp(unittest.TestCase):
 
         # Get outputs
         v_inf_mag_defect = prob.get_val('v_inf_mag_defect', units='km/s')
-        h_p_defect = prob.get_val('h_p_defect', units='unitless')
+        h_p_norm = prob.get_val('h_p_norm', units='unitless')
 
         # V-infinity magnitude defect should be very small (nearly zero)
         assert_near_equal(v_inf_mag_defect[0], 0.0, tolerance=1e-10)
@@ -62,7 +61,7 @@ class TestFlybyDefectComp(unittest.TestCase):
         # but we can check it's a reasonable number
         print(f"\nFlyby defects:")
         print(f"  v_inf_mag_defect = {v_inf_mag_defect[0]:.6e} km/s")
-        print(f"  h_p_defect = {h_p_defect[0]:.6f}")
+        print(f"  h_p_norm = {h_p_norm[0]:.6f}")
 
     def test_flyby_defect_comp_multiple_flybys(self):
         """Test FlybyDefectComp with multiple flybys."""
@@ -106,7 +105,7 @@ class TestFlybyDefectComp(unittest.TestCase):
 
         # Get outputs
         v_inf_mag_defect = prob.get_val('v_inf_mag_defect', units='km/s')
-        h_p_defect = prob.get_val('h_p_defect', units='unitless')
+        h_p_norm = prob.get_val('h_p_norm', units='unitless')
 
         # All v_infinity magnitude defects should be near zero
         for i in range(3):
@@ -115,7 +114,7 @@ class TestFlybyDefectComp(unittest.TestCase):
         print(f"\nMultiple flyby defects:")
         for i in range(3):
             print(f"  Flyby {i}: v_inf_mag_defect = {v_inf_mag_defect[i]:.6e}, "
-                  f"h_p_defect = {h_p_defect[i]:.6f}")
+                  f"h_p_norm = {h_p_norm[i]:.6f}")
 
     def test_flyby_altitude_violation(self):
         """Test that altitude violations are detected correctly."""
@@ -148,13 +147,13 @@ class TestFlybyDefectComp(unittest.TestCase):
 
         prob.run_model()
 
-        h_p_defect = prob.get_val('h_p_defect', units='unitless')
+        h_p_norm = prob.get_val('h_p_norm', units='unitless')
 
         # Small turn angle should give large altitude, violating upper bound
         # h_p_defect > 0 indicates violation
         print(f"\nAltitude violation test:")
-        print(f"  h_p_defect = {h_p_defect[0]:.6f}")
-        print(f"  Positive value indicates violation: {h_p_defect[0] > 0}")
+        print(f"  h_p_norm = {h_p_norm[0]:.6f}")
+        print(f"  Positive value indicates violation: {h_p_norm[0] > 0}")
 
 
 if __name__ == '__main__':
