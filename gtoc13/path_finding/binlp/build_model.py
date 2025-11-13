@@ -402,11 +402,13 @@ def objective_fnc(seq_model: pyo.ConcreteModel):
                 lin_term = 0
 
         GT_bonus = 1.0 + 0.3 * model.all_planets
-        if seq_model.find_component("L_kimj"):
-            dv_penalty = -pyo.summation(model.L_kimj, model.dv_kimj, index=model.KIMJ) / 10
-        else:
-            dv_penalty = 0
-        return GT_bonus * pyo.quicksum(model.w_k[k] * flyby_ki[ki] for ki in model.KI) + dv_penalty
+        # if seq_model.find_component("L_kimj"):
+        #     dv_penalty = -pyo.summation(model.L_kimj, model.dv_kimj, index=model.KIMJ) / 10
+        # else:
+        #     dv_penalty = 0
+        return GT_bonus * pyo.quicksum(
+            model.w_k[k] * flyby_ki[ki] for ki in model.KI
+        )  # + dv_penalty
 
     seq_model.maximize_score = pyo.Objective(
         rule=obj_rule,

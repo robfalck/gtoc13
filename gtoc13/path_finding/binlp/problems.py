@@ -80,7 +80,6 @@ def run_segment_problem(
     dv_table: DVTable | None = None,
     sequence: list[SequenceTarget] | None = None,
     flyby_history: dict[int : list[ndarray]] | None = None,
-    disallowed: int | list[int] | None = None,
 ):
     """
     - initialize the model with trajectory problem + extra?
@@ -107,9 +106,9 @@ def run_segment_problem(
         first_arcs_constrs(segment_model, index_params.first_arcs)
         print("<<<<< ASSUMED INITIAL ARCS ADDED <<<<<\n")
 
-    if disallowed:
+    if index_params.disallowed:
         print(">>>>> SET UP DISALLOWED END TARGETS CONSTRAINTS >>>>>\n")
-        disallow_constrs(segment_model, disallowed)
+        disallow_constrs(segment_model, index_params.disallowed)
         print("<<<<< DISALLOWED END TARGETS ADDED <<<<<\n")
     print("<<<<< MODEL SETUP COMPLETE <<<<<")
 
