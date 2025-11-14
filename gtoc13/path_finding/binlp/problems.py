@@ -3,7 +3,7 @@ from gtoc13.path_finding.binlp.b_utils import (
     timer,
     IndexParams,
     SolverParams,
-    DVTable,
+    ArcTable,
     SequenceTarget,
 )
 from gtoc13.path_finding.binlp.build_model import (
@@ -48,14 +48,14 @@ def run_trajectory_problem(
     index_params: IndexParams,
     discrete_data: dict,
     solver_params: SolverParams,
-    dv_table: DVTable,
+    arc_table: ArcTable,
 ):
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")
     segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
     x_vars_and_constrs(segment_model)
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
-    traj_arcs_vars_and_constrs(segment_model, dv_table)
+    traj_arcs_vars_and_constrs(segment_model, arc_table)
     grand_tour_vars_and_constrs(segment_model)
     objective_fnc(segment_model)
     print("...total segment setup time...")
@@ -77,7 +77,7 @@ def run_segment_problem(
     index_params: IndexParams,
     discrete_data: dict,
     solver_params: SolverParams,
-    dv_table: DVTable | None = None,
+    arc_table: ArcTable | None = None,
     sequence: list[SequenceTarget] | None = None,
     flyby_history: dict[int : list[ndarray]] | None = None,
 ):
@@ -95,8 +95,8 @@ def run_segment_problem(
     x_vars_and_constrs(segment_model)
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
-    if dv_table:
-        traj_arcs_vars_and_constrs(segment_model, dv_table)
+    if arc_table:
+        traj_arcs_vars_and_constrs(segment_model, arc_table)
     grand_tour_vars_and_constrs(segment_model)
     objective_fnc(segment_model)
     print("...total segment setup time...")

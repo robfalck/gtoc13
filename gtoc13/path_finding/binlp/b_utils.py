@@ -18,7 +18,7 @@ from lamberthub import izzo2015
 import plotly
 import plotly.graph_objects as go
 
-from gtoc13 import YPTU, bodies_data, Body
+from gtoc13 import YPTU, bodies_data, Body, MU_ALTAIRA
 
 
 np.set_printoptions(legacy="1.25")
@@ -45,7 +45,7 @@ class IndexParams:
     flyby_limit: int
     gt_planets: int
     dv_limit: Optional[float]
-    dv_match_tol: float = 1.0  # km/s
+    dE_tol: float  # km**2/s**2
     first_arcs: Optional[None | list[int | tuple[int, tuple[int, int]]]] = (
         None  # integer of body, or body with bounds on timesteps
     )
@@ -71,11 +71,17 @@ class DisBody:
 
 
 @dataclass
-class DVTable:
-    tofs: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})  # {kimj: {tof: float, dv: float}
+class ArcTable:
+    tofs: dict = field(
+        default_factory=lambda: {tuple[int, int, int, int]: float}
+    )  # {kimj: {tof: float, dv: float}
     # dv_tot: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
-    dv_in: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
-    dv_out: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    pro_energy: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    pro_vinf_a: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
+    pro_vinf_d: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
+    ret_energy: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    ret_vinf_a: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
+    ret_vinf_d: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
 
 
 @dataclass
@@ -170,7 +176,10 @@ def create_discrete_dataset(
             name=body.name,
             weight=body.weight,
             r_du=np.array(
-                [body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r for idx in range(num)]
+                [
+                    body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
+                    for idx in range(num)
+                ]
             ),
             t_tu=timesteps,
             tp_tu=np.float32(body.get_period(units="TU")),
@@ -178,7 +187,7 @@ def create_discrete_dataset(
     return dis_ephm, k_body, num, timesteps
 
 
-def min_dv_lam(k: int, ti: float, m: int, tof: float, debug: bool = False) -> dict:
+def lambert_arc(k: int, ti: float, m: int, tof: float, debug: bool = False) -> dict:
     tj = tof + ti
     state_ki = bodies_data[k].get_state(ti, time_units="TU", distance_units="DU")
     state_mj = bodies_data[m].get_state(tj, time_units="TU", distance_units="DU")
@@ -195,7 +204,7 @@ def min_dv_lam(k: int, ti: float, m: int, tof: float, debug: bool = False) -> di
         prograde=True,
         low_path=True,
     )
-    retro = izzo2015(
+    ret = izzo2015(
         1,
         np.array(r_ki, dtype=np.float64),
         np.array(r_mj, dtype=np.float64),
@@ -203,24 +212,26 @@ def min_dv_lam(k: int, ti: float, m: int, tof: float, debug: bool = False) -> di
         prograde=False,
         low_path=True,
     )
-    dv_p = dict(dv_out=norm(pro[0] - np.array(v_ki)), dv_in=norm(pro[1] - np.array(v_mj)))
-    dv_r = dict(dv_out=norm(retro[0] - np.array(v_ki)), dv_in=norm(retro[1] - np.array(v_mj)))
-    pro_tot = dv_p["dv_out"] + dv_p["dv_in"]
-    retro_tot = dv_r["dv_out"] + dv_r["dv_in"]
-    if pro_tot <= retro_tot:
-        return dv_p
-    else:
-        return dv_r
+    pro_energy = (norm(pro[0]) ** 2) / 2 - 1 / norm(r_ki)
+    pro_vinf_a = pro[1] - np.array(v_mj)
+    pro_vinf_d = pro[0] - np.array(v_ki)
 
-    # min_dv = min(dv_pro, dv_retro)
-    # return min_dv
+    ret_energy = (norm(ret[0]) ** 2) / 2 - 1 / norm(r_ki)
+    ret_vinf_a = ret[1] - np.array(v_mj)
+    ret_vinf_d = ret[0] - np.array(v_ki)
+
+    return pro_energy, pro_vinf_a, pro_vinf_d, ret_energy, ret_vinf_a, ret_vinf_d
 
 
 @timer
-def build_dv_table(body_list: list[int], timesteps: np.ndarray):
-    tof_dict = {}
-    dv_in_dict = {}
-    dv_out_dict = {}
+def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
+    tofs = {}
+    p_se = {}
+    p_vi_a = {}
+    p_vi_d = {}
+    r_se = {}
+    r_vi_a = {}
+    r_vi_d = {}
     for kimj in tqdm(
         [
             (k, i, m, j)
@@ -234,12 +245,26 @@ def build_dv_table(body_list: list[int], timesteps: np.ndarray):
         k, i, m, j = kimj
         tof = timesteps[j] - timesteps[i]
         if tof >= 0:
-            dvs = min_dv_lam(k, timesteps[i], m, tof)
-            dv_out_dict[(k, i + 1, m, j + 1)] = dvs["dv_out"]
-            dv_in_dict[(k, i + 1, m, j + 1)] = dvs["dv_in"]
-            tof_dict[(k, i + 1, m, j + 1)] = tof
-    dv_table = DVTable(tofs=tof_dict, dv_in=dv_in_dict, dv_out=dv_out_dict)
-    return dv_table
+            tofs[(k, i + 1, m, j + 1)] = tof
+            (
+                p_se[(k, i + 1, m, j + 1)],
+                p_vi_a[(k, i + 1, m, j + 1)],
+                p_vi_d[(k, i + 1, m, j + 1)],
+                r_se[(k, i + 1, m, j + 1)],
+                r_vi_a[(k, i + 1, m, j + 1)],
+                r_vi_d[(k, i + 1, m, j + 1)],
+            ) = lambert_arc(k, timesteps[i], m, tof)
+
+    arc_table = ArcTable(
+        tofs=tofs,
+        pro_energy=p_se,
+        pro_vinf_a=p_vi_a,
+        pro_vinf_d=p_vi_d,
+        ret_energy=r_se,
+        ret_vinf_a=r_vi_a,
+        ret_vinf_d=r_vi_d,
+    )
+    return arc_table
 
 
 def plot_porkchop(
@@ -291,4 +316,6 @@ def plot_porkchop(
     else:
         output_path = Path.cwd() / "outputs"
         output_path.mkdir(exist_ok=True)
-        plotly.offline.plot(fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False)
+        plotly.offline.plot(
+            fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False
+        )
