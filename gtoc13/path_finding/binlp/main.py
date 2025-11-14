@@ -20,18 +20,18 @@ from gtoc13.path_finding.binlp.problems import run_basic_problem, run_trajectory
 
 ############### EDIT CONFIG ###############
 debug = False
-input_dict = dict(Yo=3, Yf=28, perYear=0.5, bodies_data=bodies_data)
+input_dict = dict(Yo=3, Yf=68, perYear=0.25, bodies_data=bodies_data)
 discrete_data, k_body, num, timesteps = create_discrete_dataset(**input_dict)
 arc_table = build_arc_table(k_body, timesteps)
 pidxs_params = IndexParams(
     bodies_ID=k_body,
     n_timesteps=num,
-    seq_length=3,
+    seq_length=5,
     flyby_limit=1,
-    gt_planets=3,
-    dv_limit=100.0,
-    dE_tol=10.0,
-    first_arcs=[(10, 9, 8, 7)],
+    gt_planets=5,
+    dv_limit=200.0,
+    dE_tol=30.0,
+    # first_arcs=[(10, 9, 8, 7)],
 )
 solv_params = SolverParams(
     solver_name="scip",  # AMPL-format solvers
@@ -43,3 +43,6 @@ if debug:
 
 # seg, m = run_basic_problem(pidxs_params, discrete_data, solv_params)
 tseg, tm = run_trajectory_problem(pidxs_params, discrete_data, solv_params, arc_table)
+
+import numpy as np
+import pyomo.environ as pyo

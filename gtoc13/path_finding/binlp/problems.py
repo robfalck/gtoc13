@@ -55,9 +55,9 @@ def run_trajectory_problem(
     x_vars_and_constrs(segment_model)
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
-    traj_arcs_vars_and_constrs(segment_model, arc_table)
+    vinfs = traj_arcs_vars_and_constrs(segment_model, arc_table)
     grand_tour_vars_and_constrs(segment_model)
-    objective_fnc(segment_model)
+    objective_fnc(segment_model, vinfs)
     print("...total segment setup time...")
 
     if index_params.first_arcs:
@@ -95,10 +95,9 @@ def run_segment_problem(
     x_vars_and_constrs(segment_model)
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
-    if arc_table:
-        traj_arcs_vars_and_constrs(segment_model, arc_table)
+    vinfs = traj_arcs_vars_and_constrs(segment_model, arc_table)
     grand_tour_vars_and_constrs(segment_model)
-    objective_fnc(segment_model)
+    objective_fnc(segment_model, vinfs)
     print("...total segment setup time...")
 
     if index_params.first_arcs:

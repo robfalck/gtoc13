@@ -89,16 +89,6 @@ def process_arcs(model: pyo.ConcreteModel, short_sequence: list[tuple[int, int]]
                     f"spec_en: {energy}",
                 )
             )
-
-        # lambert_arcs = [
-        #     [
-        #         short_sequence.index((k, i)) + 1,
-        #         f"({k}, {i}) to ({m}, {j})",
-        #         f"dv_tot: {round((model.dvout_kimj[k, i, m, j] + model.dvin_kimj[k, i, m, j]) * KMPDU / SPTU, 3)}",
-        #     ]
-        #     for (k, i, m, j), v in model.L_kimj.items()
-        #     if pyo.value(v) > 0.5
-        # ]
         lambert_arcs = sorted(lambert_arcs)
         for arc in lambert_arcs:
             print(arc)

@@ -11,11 +11,19 @@ and run `conda install scip`.
 """
 
 from gtoc13 import DAY, SPTU, KMPDU
-from gtoc13.path_finding.binlp.b_utils import timer, IndexParams, ArcTable, lin_dots_penalty
+from gtoc13.path_finding.binlp.b_utils import (
+    IndexParams,
+    ArcTable,
+    timer,
+    lin_dots_penalty,
+    vinf_penalty,
+    dotangle_min,
+    dotangle_max,
+)
 import pyomo.environ as pyo
 from math import factorial
 from typing import Optional
-from numpy import float64
+from numpy import float64, dot
 from numpy.linalg import norm
 
 
@@ -331,8 +339,9 @@ def grand_tour_vars_and_constrs(seq_model: pyo.ConcreteModel):
     )
 
 
+############################################################################################################
 @timer
-def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable):
+def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable) -> dict:
     """
     L[k,i,m,j] : binary variable indicating a trajectory arc between bodies k, m at timesteps i, j
 
@@ -410,19 +419,29 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
 
     seq_model.L_arcs = pyo.Constraint(seq_model.KIMJ * seq_model.H, rule=h_arcs_expr)
 
-    print("...create L*_kimj change in energy constraints...")
+    print("...create L*_**ki and L*_ki** terms...")
     # if kimj have too much of an energy difference, it's invalid
     en_in = {}
     en_out = {}
-    dv_in = {}
-    dv_out = {}
+    vinf_mag_in = {}
+    vinf_mag_out = {}
+    vinf_in_temp = {}
+    vinf_out_temp = {}
     for k, i, m, j in seq_model.KIMJ:
         if (m, j) in en_in:
             en_in[m, j] += (
                 seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
                 + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
             )
-            dv_in[m, j] += seq_model.Lp_kimj[k, i, m, j] * norm(
+            vinf_in_temp[m, j].append(
+                seq_model.Lp_kimj[k, i, m, j]
+                * seq_model.p_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
+                + seq_model.Lr_kimj[k, i, m, j]
+                * seq_model.r_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+            )
+            vinf_mag_in[m, j] += seq_model.Lp_kimj[k, i, m, j] * norm(
                 seq_model.p_vi_a_kimj[k, i, m, j]
             ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_a_kimj[k, i, m, j])
         else:
@@ -430,7 +449,15 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
                 seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
                 + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
             )
-            dv_in[m, j] = seq_model.Lp_kimj[k, i, m, j] * norm(
+            vinf_in_temp[m, j] = [
+                seq_model.Lp_kimj[k, i, m, j]
+                * seq_model.p_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
+                + seq_model.Lr_kimj[k, i, m, j]
+                * seq_model.r_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+            ]
+            vinf_mag_in[m, j] = seq_model.Lp_kimj[k, i, m, j] * norm(
                 seq_model.p_vi_a_kimj[k, i, m, j]
             ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_a_kimj[k, i, m, j])
         if (k, i) in en_out:
@@ -438,7 +465,15 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
                 seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
                 + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
             )
-            dv_out[k, i] += seq_model.Lp_kimj[k, i, m, j] * norm(
+            vinf_out_temp[k, i].append(
+                seq_model.Lp_kimj[k, i, m, j]
+                * seq_model.p_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
+                + seq_model.Lr_kimj[k, i, m, j]
+                * seq_model.r_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+            )
+            vinf_mag_out[k, i] += seq_model.Lp_kimj[k, i, m, j] * norm(
                 seq_model.p_vi_d_kimj[k, i, m, j]
             ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_d_kimj[k, i, m, j])
         else:
@@ -446,10 +481,20 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
                 seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
                 + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
             )
-            dv_out[k, i] = seq_model.Lp_kimj[k, i, m, j] * norm(
+            vinf_out_temp[k, i] = [
+                seq_model.Lp_kimj[k, i, m, j]
+                * seq_model.p_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
+                + seq_model.Lr_kimj[k, i, m, j]
+                * seq_model.r_vi_a_kimj[k, i, m, j]
+                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+            ]
+            vinf_mag_out[k, i] = seq_model.Lp_kimj[k, i, m, j] * norm(
                 seq_model.p_vi_d_kimj[k, i, m, j]
             ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_d_kimj[k, i, m, j])
 
+    print("...create L*_kimj change in energy constraints...")
+    # if kimj have too much of an energy difference, it's invalid
     seq_model.energy_diff_neg = pyo.Constraint(
         seq_model.KI,
         rule=lambda model, k, i: en_in[k, i] - en_out[k, i] >= -model.dE_tol
@@ -468,32 +513,63 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
     seq_model.dv_limit = pyo.Constraint(
         seq_model.KIMJ,
         rule=lambda model, k, i, m, j: model.Lp_kimj[k, i, m, j]
-        * (norm(model.p_vi_a_kimj[k, i, m, j]) + norm(model.p_vi_d_kimj[k, i, m, j]))
-        + model.Lr_kimj[k, i, m, j]
-        * (norm(model.r_vi_a_kimj[k, i, m, j]) + norm(model.r_vi_d_kimj[k, i, m, j]))
+        * (norm(model.p_vi_a_kimj[k, i, m, j]))
+        + model.Lr_kimj[k, i, m, j] * (norm(model.r_vi_a_kimj[k, i, m, j]))
         <= model.dtu_limit,
     )
 
     print("...create L_**ki and L_ki** dv_in and dv_out match constraints...")
     # if x_ki* is an internal body, dv_in should match dv_out
-    seq_model.dtu_tol = 5 * float(SPTU / KMPDU)  # km/s
+    seq_model.dtu_tol = 10 * float(SPTU / KMPDU)  # km/s
     seq_model.dv_match_pos = pyo.Constraint(
         seq_model.KI,
-        rule=lambda model, k, i: dv_in[k, i] - dv_out[k, i] <= model.dtu_tol
-        if ((k, i) in dv_in and (k, i) in dv_out)
+        rule=lambda model, k, i: vinf_mag_in[k, i] - vinf_mag_out[k, i] <= model.dtu_tol
+        if ((k, i) in vinf_mag_in and (k, i) in vinf_mag_out)
+        else pyo.Constraint.Skip,
+    )
+    seq_model.dv_match_neg = pyo.Constraint(
+        seq_model.KI,
+        rule=lambda model, k, i: vinf_mag_in[k, i] - vinf_mag_out[k, i] >= -model.dtu_tol
+        if ((k, i) in vinf_mag_in and (k, i) in vinf_mag_out)
         else pyo.Constraint.Skip,
     )
 
-    seq_model.dv_match_neg = pyo.Constraint(
+    print("...create plausible turning angle constraints...")
+    vinf_in = {ki: sum(vinf_in_temp[ki]) for ki in vinf_in_temp.keys()}
+    vinf_out = {ki: sum(vinf_out_temp[ki]) for ki in vinf_out_temp.keys()}
+
+    seq_model.small_body_turning = pyo.Constraint(
         seq_model.KI,
-        rule=lambda model, k, i: dv_in[k, i] - dv_out[k, i] >= -model.dtu_tol
-        if ((k, i) in dv_in and (k, i) in dv_out)
+        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i])
+        + (1 - pyo.quicksum(model.x_kih[k, i, :]))
+        >= 0.98
+        if ((k, i) in vinf_in and (k, i) in vinf_out and k > 10)
         else pyo.Constraint.Skip,
     )
+    seq_model.large_body_turning_min = pyo.Constraint(
+        seq_model.KI,
+        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i])
+        + (1 - pyo.quicksum(model.x_kih[k, i, :]))
+        >= -0.2
+        # >= dotangle_min(vinf_mag_in[k, i], k)
+        if ((k, i) in vinf_in and (k, i) in vinf_out and k <= 10)
+        else pyo.Constraint.Skip,
+    )
+    seq_model.large_body_turning_max = pyo.Constraint(
+        seq_model.KI,
+        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i]) <= 0.8
+        # <= dotangle_max(vinf_mag_in[k, i], k)
+        if ((k, i) in vinf_in and (k, i) in vinf_out and k <= 10)
+        else pyo.Constraint.Skip,
+    )
+    return vinf_mag_in
+
+
+#######################################################################################################
 
 
 @timer
-def objective_fnc(seq_model: pyo.ConcreteModel):
+def objective_fnc(seq_model: pyo.ConcreteModel, vinfs: dict):
     def obj_rule(model):
         ##### Objective Function and Scoring #####
         print("...create (z_ki, y_kij, k_kih) -> S(r_kij) seasonal penalty terms...")
@@ -510,18 +586,21 @@ def objective_fnc(seq_model: pyo.ConcreteModel):
                 lin_term = 0
 
         GT_bonus = 1.0 + 0.3 * model.all_planets
-        # if seq_model.find_component("L_kimj"):
-        #     dv_penalty = -pyo.summation(model.L_kimj, model.dv_kimj, index=model.KIMJ) / 10
-        # else:
-        #     dv_penalty = 0
+        if model.find_component("Lp_kimj"):
+            dv_penalty = {ki: 1 for ki in model.KI}
+        else:
+            dv_penalty = {ki: 1 for ki in model.KI}
         return GT_bonus * pyo.quicksum(
-            model.w_k[k] * flyby_ki[ki] for ki in model.KI
+            model.w_k[k] * flyby_ki[ki] * dv_penalty[ki] for ki in model.KI
         )  # + dv_penalty
 
     seq_model.maximize_score = pyo.Objective(
         rule=obj_rule,
         sense=pyo.maximize,
     )
+
+
+##########################################################################################################
 
 
 @timer

@@ -156,6 +156,280 @@ def lin_dots_penalty(r_i: np.array, r_j: np.array) -> np.float32:
         )
 
 
+def vinf_penalty(vinf_in: np.float32) -> np.float32:
+    # for DU/TU units
+    if vinf_in < 2.35:
+        return 13.469 * vinf_in - 0.0142
+    else:
+        return (
+            -0.0192 * vinf_in**5
+            + 0.2069 * vinf_in**4
+            - 0.8811 * vinf_in**3
+            + 1.8804 * vinf_in**2
+            - 2.0656 * vinf_in
+            + 1.1715
+        )
+
+
+def dotangle_min(vinf: np.float32, b_id: int) -> np.float32:
+    match b_id:
+        case 1:
+            dot_prod = (
+                -0.0072 * vinf**5
+                + 0.1039 * vinf**4
+                - 0.5393 * vinf**3
+                + 1.071 * vinf**2
+                + 0.0043 * vinf
+                - 1.0081
+            )
+        case 2:
+            dot_prod = (
+                0.0128 * vinf**5
+                - 0.1978 * vinf**4
+                + 1.1691 * vinf**3
+                - 3.2878 * vinf**2
+                + 4.3814 * vinf
+                - 1.2201
+            )
+
+        case 3:
+            if vinf < 2.42:
+                dot_prod = (
+                    -0.2266 * vinf**6
+                    + 2.2211 * vinf**5
+                    - 8.7353 * vinf**4
+                    + 17.544 * vinf**3
+                    - 18.865 * vinf**2
+                    + 10.249 * vinf
+                    - 1.2005
+                )
+            else:
+                dot_prod = 0.9997
+        case 4:
+            if vinf < 1.116:
+                dot_prod = (
+                    -5.2052 * vinf**4 + 17.381 * vinf**3 - 21.218 * vinf**2 + 11.231 * vinf - 1.1924
+                )
+            else:
+                dot_prod = 0.9999
+
+        case 5:
+            if vinf < 1.416:
+                dot_prod = (
+                    1.7535 * vinf**4 - 5.7851 * vinf**3 + 5.4358 * vinf**2 + 0.2489 * vinf - 1.0146
+                )
+            else:
+                dot_prod = 0.011 * vinf**3 - 0.1237 * vinf**2 + 0.4598 * vinf + 0.4298
+
+        case 6:
+            dot_prod = (
+                0.0063 * vinf**6
+                - 0.1031 * vinf**5
+                + 0.6479 * vinf**4
+                - 1.8878 * vinf**3
+                + 2.2357 * vinf**2
+                + 0.2692 * vinf
+                - 1.0311
+            )
+
+        case 7:
+            if vinf < 1.516:
+                dot_prod = (
+                    4.9725 * vinf**6
+                    - 26.501 * vinf**5
+                    + 54.764 * vinf**4
+                    - 53.667 * vinf**3
+                    + 22.6 * vinf**2
+                    - 0.258 * vinf
+                    - 1.0004
+                )
+            else:
+                dot_prod = -0.0028 * vinf**2 + 0.0218 * vinf + 0.9582
+
+        case 8:
+            if vinf < 1.016:
+                dot_prod = (
+                    5.5151 * vinf**4 - 13.68 * vinf**3 + 9.8893 * vinf**2 + 0.0724 * vinf - 1.0057
+                )
+            elif vinf < 3.715:
+                dot_prod = (
+                    -0.0206 * vinf**4 + 0.2278 * vinf**3 - 0.9334 * vinf**2 + 1.6946 * vinf - 0.168
+                )
+            else:
+                dot_prod = 0.9999
+
+        case 9:
+            if vinf < 1.51589:
+                dot_prod = (
+                    -1.8327 * vinf**5
+                    + 8.6614 * vinf**4
+                    - 14.843 * vinf**3
+                    + 9.963 * vinf**2
+                    - 0.2283 * vinf
+                    - 0.9981
+                )
+            else:
+                dot_prod = 0.0066 * vinf**3 - 0.0747 * vinf**2 + 0.281 * vinf + 0.6471
+
+        case 10:
+            if vinf < 0.81612:
+                dot_prod = (
+                    15.469 * vinf**4 - 29.675 * vinf**3 + 16.231 * vinf**2 + 0.3922 * vinf - 1.0117
+                )
+            else:
+                dot_prod = (
+                    -0.0016 * vinf**6
+                    + 0.0298 * vinf**5
+                    - 0.2311 * vinf**4
+                    + 0.9311 * vinf**3
+                    - 2.0559 * vinf**2
+                    + 2.3702 * vinf
+                    - 0.1293
+                )
+
+    return dot_prod
+
+
+def dotangle_max(vinf: np.float32, b_id: int) -> np.float32:
+    match b_id:
+        case 1:
+            if vinf < 0.715:
+                dot_prod = 9.1669 * vinf**3 - 17.04 * vinf**2 + 10.514 * vinf - 1.1815
+            else:
+                dot_prod = 0.0015 * vinf + 0.9946
+        case 2:
+            if vinf < 0.117:
+                dot_prod = 16.483 * vinf - 1.0121
+            else:
+                dot_prod = (
+                    -0.0011 * vinf**6
+                    + 0.0181 * vinf**5
+                    - 0.1159 * vinf**4
+                    + 0.3643 * vinf**3
+                    - 0.5786 * vinf**2
+                    + 0.4252 * vinf
+                    + 0.8932
+                )
+
+        case 3:
+            if vinf < 0.117:
+                dot_prod = 10.441 * vinf - 0.2197
+            else:
+                dot_prod = 0.0001 * vinf + 0.9996
+
+        case 4:
+            if vinf < 0.11635:
+                dot_prod = 9.0037 * vinf - 0.0506
+            else:
+                dot_prod = 1
+
+        case 5:
+            if vinf < 0.11635:
+                dot_prod = 15.894 * vinf - 1.1365
+            elif vinf < 1.416:
+                dot_prod = (
+                    -5.9664 * vinf**6
+                    + 30.566 * vinf**5
+                    - 62.319 * vinf**4
+                    + 64.273 * vinf**3
+                    - 35.094 * vinf**2
+                    + 9.5522 * vinf
+                    - 0.0104
+                )
+            else:
+                dot_prod = 0.99998
+
+        case 6:
+            if vinf < 1.116:
+                dot_prod = (
+                    21.075 * vinf**5
+                    - 73.869 * vinf**4
+                    + 99.059 * vinf**3
+                    - 63.253 * vinf**2
+                    + 19.214 * vinf
+                    - 1.242
+                )
+            else:
+                dot_prod = 0.999999
+
+        case 7:
+            if vinf < 0.11635:
+                dot_prod = 16.089 * vinf - 0.9315
+            elif vinf < 0.6162:
+                dot_prod = (
+                    -9.1064 * vinf**4 + 15.656 * vinf**3 - 9.762 * vinf**2 + 2.614 * vinf + 0.7456
+                )
+            else:
+                dot_prod = 0.99999
+
+        case 8:
+            if vinf < 0.11635:
+                dot_prod = 16.551 * vinf - 1.0791
+            elif vinf < 0.2165:
+                dot_prod = 1.3347 * vinf + 0.6914
+            elif vinf < 1.016:
+                dot_prod = (
+                    -2.7264 * vinf**6
+                    + 11.294 * vinf**5
+                    - 19.11 * vinf**4
+                    + 16.912 * vinf**3
+                    - 8.2716 * vinf**2
+                    + 2.1299 * vinf
+                    + 0.772
+                )
+            else:
+                dot_prod = 3e-6 * vinf**3 - 3e-5 * vinf**2 + 0.0001 * vinf + 0.9999
+
+        case 9:
+            if vinf < 0.5162:
+                dot_prod = (
+                    -268.28 * vinf**4 + 357 * vinf**3 - 168.7 * vinf**2 + 33.387 * vinf - 1.3423
+                )
+            elif vinf < 1.216:
+                dot_prod = (
+                    -0.0159 * vinf**4 + 0.0633 * vinf**3 - 0.0943 * vinf**2 + 0.0628 * vinf + 0.984
+                )
+            else:
+                dot_prod = (
+                    -5e-7 * vinf**6
+                    + 1e-5 * vinf**5
+                    - 9e-5 * vinf**4
+                    + 0.0004 * vinf**3
+                    - 0.0009 * vinf**2
+                    + 0.0012 * vinf
+                    + 0.9994
+                )
+
+        case 10:
+            if vinf < 0.11635:
+                dot_prod = 16.066 * vinf - 0.9277
+            elif vinf < 0.616186:
+                dot_prod = (
+                    31.241 * vinf**5
+                    - 66.149 * vinf**4
+                    + 54.758 * vinf**3
+                    - 22.165 * vinf**2
+                    + 4.3994 * vinf
+                    + 0.655
+                )
+            elif vinf < 1.51589:
+                dot_prod = (
+                    -0.0006 * vinf**4 + 0.0032 * vinf**3 - 0.0058 * vinf**2 + 0.0047 * vinf + 0.9985
+                )
+            else:
+                dot_prod = (
+                    -4e-8 * vinf**6
+                    + 8e-7 * vinf**5
+                    - 7e-6 * vinf**4
+                    + 3e-5 * vinf**3
+                    - 9e-5 * vinf**2
+                    + 0.0001 * vinf
+                    + 0.9999
+                )
+
+    return dot_prod
+
+
 @timer
 def create_discrete_dataset(
     Yo: float, Yf: float, bodies_data: dict[int:Body], perYear: int = 2, include_small: bool = False
