@@ -14,18 +14,19 @@ from gtoc13.path_finding.binlp.problems import run_segment_problem
 import numpy as np
 
 # ############### CONFIG 1 ###############
-input_dict_1 = dict(Yo=30, Yf=100, perYear=0.25, bodies_data=bodies_data)
+input_dict_1 = dict(Yo=60, Yf=85, perYear=0.5, bodies_data=bodies_data)
 discrete_data_1, k_body_1, num_1, timesteps_1 = create_discrete_dataset(**input_dict_1)
 arc_table_1 = build_arc_table(k_body_1, timesteps_1)
 pidxs_params_1 = IndexParams(
     bodies_ID=k_body_1,
     n_timesteps=num_1,
-    seq_length=4,
-    flyby_limit=1,
-    gt_planets=4,
-    dv_limit=150.0,  # km/s
-    dE_tol=20.0,
-    first_arcs=[(10, 9, 8, 7)],
+    seq_length=3,
+    flyby_limit=3,
+    gt_planets=3,
+    gt_smalls=3,
+    dv_limit=175.0,  # km/s
+    dE_tol=25.0,
+    # first_arcs=[(10, 9, 8, 7)],
     # disallowed=[(1000, "all")],
 )
 solv_params_1 = SolverParams(

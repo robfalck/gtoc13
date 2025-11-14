@@ -53,9 +53,15 @@ def initialize_model(
     seq_model.w_k = pyo.Param(
         seq_model.K, initialize=lambda model, k: bodies[k].weight, domain=pyo.PositiveReals
     )  # scoring weights
-    seq_model.name_k = pyo.Param(seq_model.K, initialize=lambda model, k: bodies[k].name, domain=pyo.Any)
-    seq_model.period_k = pyo.Param(seq_model.K, initialize=lambda model, k: bodies[k].tp_tu, domain=pyo.PositiveReals)
-    seq_model.dtu_limit = pyo.Param(initialize=index_params.dv_limit * float64(SPTU / KMPDU), domain=pyo.PositiveReals)
+    seq_model.name_k = pyo.Param(
+        seq_model.K, initialize=lambda model, k: bodies[k].name, domain=pyo.Any
+    )
+    seq_model.period_k = pyo.Param(
+        seq_model.K, initialize=lambda model, k: bodies[k].tp_tu, domain=pyo.PositiveReals
+    )
+    seq_model.dtu_limit = pyo.Param(
+        initialize=index_params.dv_limit * float64(SPTU / KMPDU), domain=pyo.PositiveReals
+    )
     seq_model.dE_tol = pyo.Param(
         initialize=index_params.dE_tol * (float64(SPTU / KMPDU) ** 2), domain=pyo.PositiveReals
     )
@@ -63,6 +69,7 @@ def initialize_model(
 
     seq_model.Nk_limit = pyo.Param(initialize=index_params.flyby_limit, domain=pyo.PositiveIntegers)
     seq_model.gt_p = pyo.Param(initialize=index_params.gt_planets)
+    seq_model.gt_s = pyo.Param(initialize=index_params.gt_smalls)
     seq_model.dt_tol = pyo.Param(initialize=float(DAY * 7 / SPTU), domain=pyo.PositiveReals)
     if flyby_history:
         seq_model.prev_encounter = pyo.Param(
@@ -78,7 +85,9 @@ def initialize_model(
 
     # Cartesian product sets
     seq_model.KI = pyo.Set(initialize=[(k, i) for k in seq_model.K for i in seq_model.I])
-    seq_model.KIJ = pyo.Set(initialize=[(k, i, j) for k in seq_model.K for i in seq_model.I for j in range(1, i)])
+    seq_model.KIJ = pyo.Set(
+        initialize=[(k, i, j) for k in seq_model.K for i in seq_model.I for j in range(1, i)]
+    )
 
     # Parameters requiring the Cartesian product sets
     seq_model.tu_ki = pyo.Param(
@@ -117,7 +126,9 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     print("...create x parition constraint...")
     # x partition constraint: selection of bodies must equal to h_tot
-    seq_model.x_partition = pyo.Constraint(rule=pyo.summation(seq_model.x_kih) == seq_model.H.at(-1))
+    seq_model.x_partition = pyo.Constraint(
+        rule=pyo.summation(seq_model.x_kih) == seq_model.H.at(-1)
+    )
 
     print("...create x_**h partition constraints...")
     # for each h, there must only be one body at some time
@@ -158,8 +169,12 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     def monotime_rule(model, h):
         if h > 1:
             term = (
-                pyo.quicksum(model.tu_ki[k, i] * model.x_kih[k, i, h] for k in model.K for i in model.I)
-                - pyo.quicksum(model.tu_ki[k, i] * model.x_kih[k, i, h - 1] for k in model.K for i in model.I)
+                pyo.quicksum(
+                    model.tu_ki[k, i] * model.x_kih[k, i, h] for k in model.K for i in model.I
+                )
+                - pyo.quicksum(
+                    model.tu_ki[k, i] * model.x_kih[k, i, h - 1] for k in model.K for i in model.I
+                )
                 >= seq_model.dt_tol
             )
         else:
@@ -171,31 +186,35 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
     print("...create x_k*h packing constraint...")
     # do not pick the same body k for sequential h positions unless the timestep is larger than 1/3 of their period.
 
-    def nodupes_rule(model, k, h):
-        if h > 1:
-            term = pyo.quicksum(model.x_kih[k, :, h]) + pyo.quicksum(model.x_kih[k, :, h - 1]) <= 1
+    # def nodupes_rule(model, k, h):
+    #     if h > 1:
+    #         term = pyo.quicksum(model.x_kih[k, :, h]) + pyo.quicksum(model.x_kih[k, :, h - 1]) <= 1
 
-        else:
-            term = pyo.Constraint.Skip
-        return term
-
-    seq_model.no_dupes = pyo.Constraint(seq_model.K * seq_model.H, rule=nodupes_rule)
-
-    # def successive_flyby_rule(model, k, i, h):
-    #     if h > 1 and i > 1:
-    #         term = (
-    #             model.x_kih[k, i, h] * model.tu_ki[k, i]
-    #             - model.x_kih[k, i - 1, h - 1] * model.tu_ki[k, i - 1]
-    #         ) + 1e3 * (2 - model.x_kih[k, i, h] - model.x_kih[k, i - 1, h - 1]) >= model.period_k[
-    #             k
-    #         ] / 3
     #     else:
     #         term = pyo.Constraint.Skip
     #     return term
 
-    # seq_model.successive_flyby = pyo.Constraint(
-    #     seq_model.K * seq_model.I * seq_model.H, rule=successive_flyby_rule
-    # )
+    # seq_model.no_dupes = pyo.Constraint(seq_model.K * seq_model.H, rule=nodupes_rule)
+
+    def successive_flyby_rule(model, k, h):
+        if h > 1:
+            term = (
+                pyo.quicksum(model.tu_ki[k, i] * model.x_kih[k, i, h] for i in model.I)
+                - pyo.quicksum(model.tu_ki[k, i] * model.x_kih[k, i, h - 1] for i in model.I)
+                + (model.period_k[k] / 3)
+                * (
+                    2
+                    - pyo.quicksum(model.x_kih[k, i, h] + model.x_kih[k, i, h - 1] for i in model.I)
+                )
+                >= model.period_k[k] / 3
+            )
+        else:
+            term = pyo.Constraint.Skip
+        return term
+
+    seq_model.successive_flyby = pyo.Constraint(
+        seq_model.K * seq_model.H, rule=successive_flyby_rule
+    )
 
 
 ################################################################################################################
@@ -224,20 +243,25 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
     # the amount of total previous flybys cannot be greater than (Nk_lim - 1)!
     seq_model.y_k_packing = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: pyo.quicksum(model.y_kij[k, ...]) <= factorial(seq_model.Nk_limit - 1),
+        rule=lambda model, k: pyo.quicksum(model.y_kij[k, ...])
+        <= factorial(seq_model.Nk_limit - 1),
     )
 
     print("...create y_kij big-M constraints...")
     # if there is both x_ki* and x_kj*, then there must be a y_kij
     seq_model.y_bigm1_x = pyo.Constraint(
         seq_model.KIJ,
-        rule=lambda model, k, i, j: pyo.quicksum(model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H)
+        rule=lambda model, k, i, j: pyo.quicksum(
+            model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H
+        )
         <= 10 * model.y_kij[k, i, j] + 1,
     )
     # if there isn't both x_ki* and x_kj*, then there cannot be a y_kij
     seq_model.y_bigm2_x = pyo.Constraint(
         seq_model.KIJ,
-        rule=lambda model, k, i, j: pyo.quicksum(model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H)
+        rule=lambda model, k, i, j: pyo.quicksum(
+            model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H
+        )
         >= 2 - 10 * (1 - model.y_kij[k, i, j]),
     )
 
@@ -263,7 +287,9 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     print("...create z_k* packing constraints...")
     # at most only ONE first flyby for body k
-    seq_model.z_k_packing = pyo.Constraint(seq_model.K, rule=lambda model, k: pyo.quicksum(model.z_ki[k, :]) <= 1)
+    seq_model.z_k_packing = pyo.Constraint(
+        seq_model.K, rule=lambda model, k: pyo.quicksum(model.z_ki[k, :]) <= 1
+    )
 
     print("...create z_k* and z_ki implication constraints...")
     # if there is a flyby at that time, then (k, i) can be a first flyby
@@ -288,13 +314,16 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
     # )
     seq_model.z_bigm_x = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :]) >= pyo.quicksum(model.x_kih[k, ...]),
+        rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :])
+        >= pyo.quicksum(model.x_kih[k, ...]),
     )
     # if there are previous flybys at time i, i cannot be a first flyby
     seq_model.z_implies_not_y = pyo.Constraint(
         seq_model.KI,
         rule=lambda model, k, i: (
-            model.z_ki[k, i] <= 1 - pyo.quicksum(model.y_kij[k, i, :]) if i > 1 else pyo.Constraint.Feasible
+            model.z_ki[k, i] <= 1 - pyo.quicksum(model.y_kij[k, i, :])
+            if i > 1
+            else pyo.Constraint.Feasible
         ),
     )
 
@@ -316,23 +345,42 @@ def grand_tour_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     """
     print("...create grand tour bonus indicator variables Zp, Gp, Zc, Gc, and big-M constraints...")
-    seq_model.planet_visited = pyo.Var(seq_model.K, domain=pyo.Binary)  # planets and yandi
+    seq_model.visited = pyo.Var(seq_model.K, domain=pyo.Binary)  # planets and yandi
     seq_model.all_planets = pyo.Var(domain=pyo.Binary)  # all planets indicator
-    seq_model.count_p_bigm1 = pyo.Constraint(
+    seq_model.enough_smalls = pyo.Var(domain=pyo.Binary)
+    seq_model.grand_tour = pyo.Var(domain=pyo.Binary)
+    seq_model.count_bigm1 = pyo.Constraint(
         seq_model.K,
-        rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) <= 2 * model.I.at(-1) * model.planet_visited[k],
+        rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...])
+        <= 2 * model.I.at(-1) * model.visited[k],
     )
-    seq_model.count_p_bigm2 = pyo.Constraint(
+    seq_model.count_bigm2 = pyo.Constraint(
         seq_model.K,
         rule=lambda model, k: pyo.quicksum(model.x_kih[k, ...]) - 1
-        >= 2 * model.I.at(-1) * (model.planet_visited[k] - 1),
+        >= 2 * model.I.at(-1) * (model.visited[k] - 1),
     )
     seq_model.all_planets_bigm1 = pyo.Constraint(
-        rule=pyo.summation(seq_model.planet_visited) - seq_model.gt_p <= seq_model.all_planets * 20
+        rule=pyo.quicksum(seq_model.visited[k] for k in seq_model.K if k <= 10) - seq_model.gt_p
+        <= seq_model.all_planets * 20
     )
     seq_model.all_planets_bigm2 = pyo.Constraint(
-        rule=pyo.summation(seq_model.planet_visited) - seq_model.gt_p >= (seq_model.all_planets - 1) * 20
+        rule=pyo.quicksum(seq_model.visited[k] for k in seq_model.K if k <= 10) - seq_model.gt_p
+        >= (seq_model.all_planets - 1) * 20
     )
+    seq_model.enough_smalls_bigm1 = pyo.Constraint(
+        rule=pyo.quicksum(seq_model.visited[k] for k in seq_model.K if k > 10) - seq_model.gt_s
+        <= seq_model.enough_smalls * 20
+    )
+    seq_model.enough_smalls_bigm2 = pyo.Constraint(
+        rule=pyo.quicksum(seq_model.visited[k] for k in seq_model.K if k > 10) - seq_model.gt_s
+        >= (seq_model.enough_smalls - 1) * 20
+    )
+    seq_model.toggle_bonus = pyo.ConstraintList()
+    seq_model.toggle_bonus.add(
+        seq_model.enough_smalls + seq_model.all_planets <= 1 + seq_model.grand_tour
+    )
+    seq_model.toggle_bonus.add(seq_model.enough_smalls >= seq_model.grand_tour)
+    seq_model.toggle_bonus.add(seq_model.all_planets >= seq_model.grand_tour)
 
 
 ###################################### LAMBERT ARC-RELATED #################################################
@@ -350,84 +398,48 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
     seq_model.KIMJ = pyo.Set(initialize=arc_table.tofs.keys())
 
     # Delta-vs and tofs
-    seq_model.p_se_kimj = pyo.Param(
+    seq_model.energy_kimj = pyo.Param(
         seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.pro_energy[k, i, m, j],
+        initialize=lambda model, k, i, m, j: arc_table.energy[k, i, m, j],
         domain=pyo.Reals,
     )
-    seq_model.p_vi_a_kimj = pyo.Param(
+    seq_model.vinf_a_kimj = pyo.Param(
         seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.pro_vinf_a[k, i, m, j],
+        initialize=lambda model, k, i, m, j: arc_table.vinf_a[k, i, m, j],
         domain=pyo.Any,
     )
-    seq_model.p_vi_d_kimj = pyo.Param(
+    seq_model.vinf_d_kimj = pyo.Param(
         seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.pro_vinf_d[k, i, m, j],
+        initialize=lambda model, k, i, m, j: arc_table.vinf_d[k, i, m, j],
         domain=pyo.Any,
     )
-    seq_model.p_dot_l_kimj = pyo.Param(
+    seq_model.dotprod_l_kimj = pyo.Param(
         seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.pro_dotprod_l[k, i, m, j],
+        initialize=lambda model, k, i, m, j: arc_table.dotprod_l[k, i, m, j],
         domain=pyo.Reals,
     )
-    seq_model.p_dot_u_kimj = pyo.Param(
+    seq_model.dotprod_u_kimj = pyo.Param(
         seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.pro_dotprod_u[k, i, m, j],
-        domain=pyo.Reals,
-    )
-    seq_model.r_se_kimj = pyo.Param(
-        seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.ret_energy[k, i, m, j],
-        domain=pyo.Reals,
-    )
-    seq_model.r_vi_a_kimj = pyo.Param(
-        seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.ret_vinf_a[k, i, m, j],
-        domain=pyo.Any,
-    )
-    seq_model.r_vi_d_kimj = pyo.Param(
-        seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.ret_vinf_d[k, i, m, j],
-        domain=pyo.Any,
-    )
-    seq_model.r_dot_l_kimj = pyo.Param(
-        seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.ret_dotprod_l[k, i, m, j],
-        domain=pyo.Reals,
-    )
-    seq_model.r_dot_u_kimj = pyo.Param(
-        seq_model.KIMJ,
-        initialize=lambda model, k, i, m, j: arc_table.ret_dotprod_u[k, i, m, j],
+        initialize=lambda model, k, i, m, j: arc_table.dotprod_u[k, i, m, j],
         domain=pyo.Reals,
     )
 
-    print("...create Lp_kimj and Lr_kimj arc indicator variables...")
+    print("...create L_kimj arc indicator variables...")
     # bodies k and m, times i and j, pro- or retrograde
-    seq_model.Lp_kimj = pyo.Var(seq_model.KIMJ, domain=pyo.Binary)
-    seq_model.Lr_kimj = pyo.Var(seq_model.KIMJ, domain=pyo.Binary)
-
-    print("...create Lp_kimj and Lr_kimj packing constraints...")
-    # if body k @ i is connected to body m @ j, then it is either pro- or retrograde
-    seq_model.L_packing = pyo.Constraint(
-        seq_model.KIMJ,
-        rule=lambda model, k, i, m, j: model.Lp_kimj[k, i, m, j] + model.Lr_kimj[k, i, m, j] <= 1,
-    )
+    seq_model.L_kimj = pyo.Var(seq_model.KIMJ, domain=pyo.Binary)
 
     print("...create Lp_kimj and Lr_kimj partition constraints...")
     # must have lambert checks up to h_tot - 1
     seq_model.L_partition = pyo.Constraint(
-        rule=pyo.summation(seq_model.Lp_kimj) + pyo.summation(seq_model.Lr_kimj) == seq_model.H.at(-2)
+        rule=pyo.summation(seq_model.L_kimj) == seq_model.H.at(-2)
     )
 
-    print("...create Lp_kimj and Lr_kimj implication constraints for x_ki(h) and x_mj(h+1)...")
+    print("...create L_kimj implication constraints for x_ki(h) and x_mj(h+1)...")
 
     # if kimj aren't connected by h and h+1, it is not a valid lambert arc
     def h_arcs_expr(model, k, i, m, j, h):
         if h > 1:
-            term = (
-                model.x_kih[k, i, h - 1] + model.x_kih[m, j, h]
-                <= 1 + model.Lp_kimj[k, i, m, j] + model.Lr_kimj[k, i, m, j]
-            )
+            term = model.x_kih[k, i, h - 1] + model.x_kih[m, j, h] <= 1 + model.L_kimj[k, i, m, j]
         else:
             term = pyo.Constraint.Skip
         return term
@@ -447,99 +459,63 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
     dotprod_max = {}
     for k, i, m, j in seq_model.KIMJ:
         if (m, j) in en_in:
-            en_in[m, j] += (
-                seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
-            dotprod_min[m, j] += (
-                seq_model.p_dot_l_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_dot_l_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
-            dotprod_max[m, j] += (
-                seq_model.p_dot_u_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_dot_u_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
+            en_in[m, j] += seq_model.energy_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
+            dotprod_min[m, j] += seq_model.dotprod_l_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
+            dotprod_max[m, j] += seq_model.dotprod_u_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
             vinf_in_temp[m, j].append(
-                seq_model.Lp_kimj[k, i, m, j]
-                * seq_model.p_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
-                + seq_model.Lr_kimj[k, i, m, j]
-                * seq_model.r_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+                seq_model.L_kimj[k, i, m, j]
+                * seq_model.vinf_a_kimj[k, i, m, j]
+                / norm(seq_model.vinf_a_kimj[k, i, m, j])
             )
-            vinf_mag_in[m, j] += seq_model.Lp_kimj[k, i, m, j] * norm(
-                seq_model.p_vi_a_kimj[k, i, m, j]
-            ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_a_kimj[k, i, m, j])
-            vinf_in_penalty[m, j] += seq_model.Lp_kimj[k, i, m, j] * vinf_penalty(
-                norm(seq_model.p_vi_a_kimj[k, i, m, j])
-            ) + seq_model.Lr_kimj[k, i, m, j] * vinf_penalty(norm(seq_model.r_vi_a_kimj[k, i, m, j]))
+            vinf_mag_in[m, j] += seq_model.L_kimj[k, i, m, j] * norm(
+                seq_model.vinf_a_kimj[k, i, m, j]
+            )
+            vinf_in_penalty[m, j] += seq_model.L_kimj[k, i, m, j] * vinf_penalty(
+                norm(seq_model.vinf_a_kimj[k, i, m, j])
+            )
         else:
-            en_in[m, j] = (
-                seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
-            dotprod_min[m, j] = (
-                seq_model.p_dot_l_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_dot_l_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
-            dotprod_max[m, j] = (
-                seq_model.p_dot_u_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_dot_u_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
+            en_in[m, j] = seq_model.energy_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
+            dotprod_min[m, j] = seq_model.dotprod_l_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
+            dotprod_max[m, j] = seq_model.dotprod_u_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
             vinf_in_temp[m, j] = [
-                seq_model.Lp_kimj[k, i, m, j]
-                * seq_model.p_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
-                + seq_model.Lr_kimj[k, i, m, j]
-                * seq_model.r_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+                seq_model.L_kimj[k, i, m, j]
+                * seq_model.vinf_a_kimj[k, i, m, j]
+                / norm(seq_model.vinf_a_kimj[k, i, m, j])
             ]
-            vinf_mag_in[m, j] = seq_model.Lp_kimj[k, i, m, j] * norm(
-                seq_model.p_vi_a_kimj[k, i, m, j]
-            ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_a_kimj[k, i, m, j])
-            vinf_in_penalty[m, j] = seq_model.Lp_kimj[k, i, m, j] * vinf_penalty(
-                norm(seq_model.p_vi_a_kimj[k, i, m, j])
-            ) + seq_model.Lr_kimj[k, i, m, j] * vinf_penalty(norm(seq_model.r_vi_a_kimj[k, i, m, j]))
+            vinf_mag_in[m, j] = seq_model.L_kimj[k, i, m, j] * norm(
+                seq_model.vinf_a_kimj[k, i, m, j]
+            )
+            vinf_in_penalty[m, j] = seq_model.L_kimj[k, i, m, j] * vinf_penalty(
+                norm(seq_model.vinf_a_kimj[k, i, m, j])
+            )
         if (k, i) in en_out:
-            en_out[k, i] += (
-                seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
+            en_out[k, i] += seq_model.energy_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
             vinf_out_temp[k, i].append(
-                seq_model.Lp_kimj[k, i, m, j]
-                * seq_model.p_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
-                + seq_model.Lr_kimj[k, i, m, j]
-                * seq_model.r_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+                seq_model.L_kimj[k, i, m, j]
+                * seq_model.vinf_a_kimj[k, i, m, j]
+                / norm(seq_model.vinf_a_kimj[k, i, m, j])
             )
-            vinf_mag_out[k, i] += seq_model.Lp_kimj[k, i, m, j] * norm(
-                seq_model.p_vi_d_kimj[k, i, m, j]
-            ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_d_kimj[k, i, m, j])
+            vinf_mag_out[k, i] += seq_model.L_kimj[k, i, m, j] * norm(
+                seq_model.vinf_d_kimj[k, i, m, j]
+            )
             if i == 1:
-                vinf_in_penalty[k, i] += seq_model.Lp_kimj[k, i, m, j] * vinf_penalty(
-                    norm(seq_model.p_vi_a_kimj[k, i, m, j])
-                ) + seq_model.Lr_kimj[k, i, m, j] * vinf_penalty(norm(seq_model.r_vi_a_kimj[k, i, m, j]))
+                vinf_in_penalty[k, i] += seq_model.L_kimj[k, i, m, j] * vinf_penalty(
+                    norm(seq_model.vinf_a_kimj[k, i, m, j])
+                )
         else:
-            en_out[k, i] = (
-                seq_model.p_se_kimj[k, i, m, j] * seq_model.Lp_kimj[k, i, m, j]
-                + seq_model.r_se_kimj[k, i, m, j] * seq_model.Lr_kimj[k, i, m, j]
-            )
+            en_out[k, i] = seq_model.energy_kimj[k, i, m, j] * seq_model.L_kimj[k, i, m, j]
             vinf_out_temp[k, i] = [
-                seq_model.Lp_kimj[k, i, m, j]
-                * seq_model.p_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.p_vi_a_kimj[k, i, m, j])
-                + seq_model.Lr_kimj[k, i, m, j]
-                * seq_model.r_vi_a_kimj[k, i, m, j]
-                / norm(seq_model.r_vi_a_kimj[k, i, m, j])
+                seq_model.L_kimj[k, i, m, j]
+                * seq_model.vinf_a_kimj[k, i, m, j]
+                / norm(seq_model.vinf_a_kimj[k, i, m, j])
             ]
-            vinf_mag_out[k, i] = seq_model.Lp_kimj[k, i, m, j] * norm(
-                seq_model.p_vi_d_kimj[k, i, m, j]
-            ) + seq_model.Lr_kimj[k, i, m, j] * norm(seq_model.r_vi_d_kimj[k, i, m, j])
+            vinf_mag_out[k, i] = seq_model.L_kimj[k, i, m, j] * norm(
+                seq_model.vinf_d_kimj[k, i, m, j]
+            )
             if i == 1:
-                vinf_in_penalty[k, i] = seq_model.Lp_kimj[k, i, m, j] * vinf_penalty(
-                    norm(seq_model.p_vi_a_kimj[k, i, m, j])
-                ) + seq_model.Lr_kimj[k, i, m, j] * vinf_penalty(norm(seq_model.r_vi_a_kimj[k, i, m, j]))
+                vinf_in_penalty[k, i] = seq_model.L_kimj[k, i, m, j] * vinf_penalty(
+                    norm(seq_model.vinf_a_kimj[k, i, m, j])
+                )
 
     print("...create L*_kimj change in energy constraints...")
     # if kimj have too much of an energy difference, it's invalid
@@ -560,8 +536,8 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
     # if the lambert arc is used, it must not exceed the dv limits.
     seq_model.dv_limit = pyo.Constraint(
         seq_model.KIMJ,
-        rule=lambda model, k, i, m, j: model.Lp_kimj[k, i, m, j] * (norm(model.p_vi_a_kimj[k, i, m, j]))
-        + model.Lr_kimj[k, i, m, j] * (norm(model.r_vi_a_kimj[k, i, m, j]))
+        rule=lambda model, k, i, m, j: model.L_kimj[k, i, m, j]
+        * (norm(model.vinf_a_kimj[k, i, m, j]))
         <= model.dtu_limit,
     )
 
@@ -587,21 +563,23 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
 
     seq_model.small_body_turning = pyo.Constraint(
         seq_model.KI,
-        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i]) + (1 - pyo.quicksum(model.x_kih[k, i, :]))
+        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i])
+        + (1 - pyo.quicksum(model.x_kih[k, i, :]))
         >= model.dot_tol
         if ((k, i) in vinf_in and (k, i) in vinf_out and k > 10)
         else pyo.Constraint.Skip,
     )
     seq_model.large_body_turning_min = pyo.Constraint(
         seq_model.KI,
-        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i]) <= dotprod_max[k, i]
+        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i]) <= dotprod_max[k, i] + 0.05
         if ((k, i) in vinf_in and (k, i) in vinf_out and k <= 10)
         else pyo.Constraint.Skip,
     )
     seq_model.large_body_turning_max = pyo.Constraint(
         seq_model.KI,
-        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i]) + (1 - pyo.quicksum(model.x_kih[k, i, :]))
-        >= dotprod_min[k, i]
+        rule=lambda model, k, i: dot(vinf_in[k, i], vinf_out[k, i])
+        + (1 - pyo.quicksum(model.x_kih[k, i, :]))
+        >= dotprod_min[k, i] - 0.05
         if ((k, i) in vinf_in and (k, i) in vinf_out and k <= 10)
         else pyo.Constraint.Skip,
     )
@@ -621,17 +599,21 @@ def objective_fnc(seq_model: pyo.ConcreteModel, vinf_penalty: dict):
         # subsequent flybys
         lin_term = 0
         for k, i, j in model.KIJ:
-            lin_term += lin_dots_penalty(model.rdu_ki[k, i], model.rdu_ki[k, j]) * model.y_kij[k, i, j]
+            lin_term += (
+                lin_dots_penalty(model.rdu_ki[k, i], model.rdu_ki[k, j]) * model.y_kij[k, i, j]
+            )
             if j == i - 1:
                 flyby_ki[k, i] = lin_term
                 lin_term = 0
 
-        GT_bonus = 1.0 + 0.3 * model.all_planets
+        GT_bonus = 1.0 + 0.3 * model.grand_tour
         if model.find_component("Lp_kimj"):
             dv_penalty = vinf_penalty
         else:
             dv_penalty = {ki: 1 for ki in model.KI}
-        return GT_bonus * pyo.quicksum(model.w_k[k] * flyby_ki[ki] * dv_penalty[ki] for ki in model.KI)  # + dv_penalty
+        return GT_bonus * pyo.quicksum(
+            model.w_k[k] * flyby_ki[ki] * dv_penalty[ki] for ki in model.KI
+        )  # + dv_penalty
 
     seq_model.maximize_score = pyo.Objective(
         rule=obj_rule,
@@ -643,7 +625,9 @@ def objective_fnc(seq_model: pyo.ConcreteModel, vinf_penalty: dict):
 
 
 @timer
-def first_arcs_constrs(seq_model: pyo.ConcreteModel, body_list: list[int | tuple[int, tuple[int, int]] | tuple | None]):
+def first_arcs_constrs(
+    seq_model: pyo.ConcreteModel, body_list: list[int | tuple[int, tuple[int, int]] | tuple | None]
+):
     if not seq_model.find_component("first_arcs"):
         seq_model.first_arcs = pyo.ConstraintList()
 
@@ -651,11 +635,16 @@ def first_arcs_constrs(seq_model: pyo.ConcreteModel, body_list: list[int | tuple
         if not isinstance(body, int):
             if isinstance(body[1], tuple):
                 seq_model.first_arcs.add(
-                    pyo.quicksum(seq_model.x_kih[body[0], i, h + 1] for i in range(body[1][0], body[1][1] + 1)) == 1
+                    pyo.quicksum(
+                        seq_model.x_kih[body[0], i, h + 1]
+                        for i in range(body[1][0], body[1][1] + 1)
+                    )
+                    == 1
                 )
             elif isinstance(body, tuple):
                 seq_model.first_arcs.add(
-                    pyo.quicksum(seq_model.x_kih[k, i, h + 1] for k in body for i in seq_model.I) == 1
+                    pyo.quicksum(seq_model.x_kih[k, i, h + 1] for k in body for i in seq_model.I)
+                    == 1
                 )
             elif body is None:
                 continue
@@ -688,6 +677,8 @@ def disallow_constrs(
             case "all":
                 seq_model.disallow.add(pyo.quicksum(seq_model.x_kih[body[0], ...]) == 0)
             case "end":
-                seq_model.disallow.add(pyo.quicksum(seq_model.x_kih[body[0], :, seq_model.H.at(-1)]) == 0)
+                seq_model.disallow.add(
+                    pyo.quicksum(seq_model.x_kih[body[0], :, seq_model.H.at(-1)]) == 0
+                )
             case __:
                 raise Exception("type 'all' or 'end' after the body ID.")

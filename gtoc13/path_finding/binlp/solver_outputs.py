@@ -29,7 +29,9 @@ def run_solver(
     results = solver.solve(
         model,
         tee=solver_params.toconsole,
-        options={"limits/gap": solver_params.soln_gap} if solver_params.solver_name == "scip" else None,
+        options={"limits/gap": solver_params.soln_gap}
+        if solver_params.solver_name == "scip"
+        else None,
         logfile=output_path / f"solverlog_{iter}.txt" if solver_params.write_log else None,
     )
     return results, solver
@@ -65,31 +67,19 @@ def process_arcs(model: pyo.ConcreteModel, short_sequence: list[tuple[int, int]]
     if model.find_component("Lp_kimj"):
         print(
             "Number of lambert arcs: ",
-            int(round(pyo.value(pyo.summation(model.Lp_kimj)))) + int(round(pyo.value(pyo.summation(model.Lr_kimj)))),
+            int(round(pyo.value(pyo.summation(model.L_kimj)))),
             "\n",
         )
         print("Lambert arcs (k, i) to (m, j):")
-        lambert_arcs = []
-        for k, i, m, j in model.KIMJ:
-            if pyo.value(model.Lp_kimj[k, i, m, j]) > 0.5:
-                energy = (
-                    "prograde",
-                    round(model.p_se_kimj[k, i, m, j] * float(KMPDU / SPTU) ** 2, 3),
-                )
-            elif pyo.value(model.Lr_kimj[k, i, m, j]) > 0.5:
-                energy = (
-                    "retrograde",
-                    round(model.r_se_kimj[k, i, m, j] * float(KMPDU / SPTU) ** 2, 3),
-                )
-            else:
-                continue
-            lambert_arcs.append(
-                (
-                    short_sequence.index((k, i)) + 1,
-                    f"({k}, {i}) to ({m}, {j})",
-                    f"spec_en: {energy}",
-                )
+        lambert_arcs = [
+            (
+                short_sequence.index((k, i)) + 1,
+                f"({k}, {i}) to ({m}, {j})",
+                f"spec_en: {model.energy[k, i, m, j]}",
             )
+            for (k, i, m, j) in model.KIMJ
+            if pyo.value(model.L_kimj[k, i, m, j]) > 0.5
+        ]
         lambert_arcs = sorted(lambert_arcs)
         for arc in lambert_arcs:
             print(arc)
@@ -106,15 +96,20 @@ def process_flybys(
     print("First flyby keys (k, i-th):")
     first_flybys = [ki for ki, v in model.z_ki.items() if pyo.value(v) > 0.5]
     pprint(sorted(first_flybys, key=lambda x: model.tu_ki[x]))
+    count_flybys = [
+        ki
+        for ki, v in model.z_ki.items()
+        if pyo.value(v) > 0.5 and model.x_kih[ki, model.H.at(-1)] != 1
+    ]
     if flyby_history:
         bodies = flyby_history.keys()
-        for k, i in first_flybys:
+        for k, i in count_flybys:
             if k in bodies:
                 flyby_history[k].append(model.rdu_ki[k, i])
             else:
                 flyby_history.update({k: [model.rdu_ki[k, i]]})
     else:
-        flyby_history = {k: [model.rdu_ki[k, i]] for (k, i) in first_flybys}
+        flyby_history = {k: [model.rdu_ki[k, i]] for (k, i) in count_flybys}
     # flyby_history = {}
     if pyo.value(pyo.summation(model.y_kij) > 0):
         # all_dupe
@@ -132,7 +127,9 @@ def process_flybys(
 
 
 @timer
-def generate_iterative_solutions(model: pyo.ConcreteModel, solver_params: SolverParams) -> list[list[SequenceTarget]]:
+def generate_iterative_solutions(
+    model: pyo.ConcreteModel, solver_params: SolverParams
+) -> list[list[SequenceTarget]]:
     print(f">>>>> RUN SOLVER FOR {solver_params.solv_iter} ITERATIONS(S) >>>>>")
     for iter in range(solver_params.solv_iter):
         print(f"...solving iteration {iter + 1}...")
