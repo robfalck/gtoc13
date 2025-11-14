@@ -219,7 +219,7 @@ def add_arc(args):
     controls = guess_sol.get_control_flags()
     prev_flyby_time = guess_sol.get_flyby_times()[-1]
     flyby_times = [prev_flyby_time, prev_flyby_time + args.flyby_dt]
-    
+
     set_initial_guesses(prob, bodies=bodies,
                         flyby_times=flyby_times,
                         t0=t0,
@@ -236,7 +236,7 @@ def add_arc(args):
     elif args.mode.startswith('feas'):
         prob.find_feasible(iprint=2, method='trf')
 
-    prob.list_problem_vars(print_arrays=True)
+    # prob.list_problem_vars(print_arrays=True)
     #
     print(f'OpenMDAO output directory: {prob.get_outputs_dir()}')
 
