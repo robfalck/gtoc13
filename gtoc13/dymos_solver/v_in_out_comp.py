@@ -28,10 +28,10 @@ class VInOutComp(om.ExplicitComponent):
             self.add_input(f'arc_{i}_v_final',
                            shape=(1, 3),
                            units='km/s')
-                    
+
         self.add_output('flyby_v_in', shape=(N, 3), units='km/s')
         self.add_output('flyby_v_out', shape=(N, 3), units='km/s')
-    
+
     def setup_partials(self):
         N = self.options['N']
 
@@ -60,7 +60,7 @@ class VInOutComp(om.ExplicitComponent):
         cols = [0, 1, 2]
         self.declare_partials(of='flyby_v_out', wrt='v_end',
                               rows=rows, cols=cols, val=1.0)
-    
+
     def compute(self, inputs, outputs):
         N = self.options['N']
         for i in range(N):
@@ -68,3 +68,59 @@ class VInOutComp(om.ExplicitComponent):
                 outputs['flyby_v_out'][i - 1, ...] = inputs[f'arc_{i}_v_initial']
             outputs['flyby_v_in'][i, ...] = inputs[f'arc_{i}_v_final']
         outputs['flyby_v_out'][-1, ...] = inputs['v_end']
+
+
+
+class SingleArcVInOutComp(om.ExplicitComponent):
+    """
+    Component that concatenates all of the intial and final arc velocities for the
+    flyby component in a single arc problem.
+    """
+    def setup(self):
+        # The initial inertial velocity before the first flyby
+        self.add_input('v_in_prev_flyby', shape=(1, 3), units='km/s')
+
+        # The final inertial velocity after the last flyby
+        self.add_input('v_end', shape=(1, 3), units='km/s')
+
+        self.add_input('arc_0_v_initial', shape=(1, 3), units='km/s')
+        self.add_input('arc_0_v_final', shape=(1, 3), units='km/s')
+
+        self.add_output('flyby_v_in', shape=(2, 3), units='km/s')
+        self.add_output('flyby_v_out', shape=(2, 3), units='km/s')
+
+    def declare_partials(self):
+        # flyby_v_in[0, :] = v_in_prev_flyby[0, :]
+        # Maps indices 0-2 of output to indices 0-2 of input
+        self.declare_partials('flyby_v_in', 'v_in_prev_flyby',
+                              rows=[0, 1, 2],
+                              cols=[0, 1, 2],
+                              val=1.0)
+
+        # flyby_v_in[1, :] = arc_0_v_final[0, :]
+        # Maps indices 3-5 of output to indices 0-2 of input
+        self.declare_partials('flyby_v_in', 'arc_0_v_final',
+                              rows=[3, 4, 5],
+                              cols=[0, 1, 2],
+                              val=1.0)
+
+        # flyby_v_out[0, :] = arc_0_v_initial[0, :]
+        # Maps indices 0-2 of output to indices 0-2 of input
+        self.declare_partials('flyby_v_out', 'arc_0_v_initial',
+                              rows=[0, 1, 2],
+                              cols=[0, 1, 2],
+                              val=1.0)
+
+        # flyby_v_out[1, :] = v_end[0, :]
+        # Maps indices 3-5 of output to indices 0-2 of input
+        self.declare_partials('flyby_v_out', 'v_end',
+                              rows=[3, 4, 5],
+                              cols=[0, 1, 2],
+                              val=1.0)
+
+    def compute(self, inputs, outputs):
+        outputs['flyby_v_in'][0, ...] = inputs['v_in_prev_flyby']
+        outputs['flyby_v_in'][1, ...] = inputs['arc_0_v_final']
+
+        outputs['flyby_v_out'][0, ...] = inputs['arc_0_v_initial']
+        outputs['flyby_v_out'][1, ...] = inputs['v_end']

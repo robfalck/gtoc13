@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import openmdao.api as om
 
-from gtoc13.odes import solar_sail_ode
+from gtoc13.odes import solar_sail_ode, modeq_ode
 from gtoc13.constants import MU_ALTAIRA, R0
 
 
@@ -302,3 +302,312 @@ class SolarSailVectorizedODEComp(om.JaxExplicitComponent):
         u_n_norm = jnp.linalg.norm(u_n, axis=-1)
 
         return drdt, dvdt, a_grav, a_sail, cos_alpha, u_n_norm
+
+
+class ModeqODEComp(om.JaxExplicitComponent):
+    """
+    OpenMDAO component that computes modified equinoctial element ODE derivatives.
+
+    This component propagates trajectories using modified equinoctial elements (MEE),
+    which avoid singularities for near-circular and near-equatorial orbits. The
+    solar sail perturbations are included in the dynamics.
+
+    Options
+    -------
+    num_nodes : int
+        Number of nodes in the trajectory
+
+    Inputs
+    ------
+    p : ndarray, shape (num_nodes,)
+        Semi-latus rectum in km
+    f : ndarray, shape (num_nodes,)
+        Eccentricity vector x-component (dimensionless)
+    g : ndarray, shape (num_nodes,)
+        Eccentricity vector y-component (dimensionless)
+    h : ndarray, shape (num_nodes,)
+        Inclination vector x-component (dimensionless)
+    k : ndarray, shape (num_nodes,)
+        Inclination vector y-component (dimensionless)
+    L : ndarray, shape (num_nodes,)
+        True longitude in radians
+    u_n : ndarray, shape (num_nodes, 3)
+        Sail normal unit vectors (dimensionless)
+
+    Outputs
+    -------
+    pdot : ndarray, shape (num_nodes,)
+        Rate of change of semi-latus rectum (km/s)
+    fdot : ndarray, shape (num_nodes,)
+        Rate of change of f (1/s)
+    gdot : ndarray, shape (num_nodes,)
+        Rate of change of g (1/s)
+    hdot : ndarray, shape (num_nodes,)
+        Rate of change of h (1/s)
+    kdot : ndarray, shape (num_nodes,)
+        Rate of change of k (1/s)
+    Ldot : ndarray, shape (num_nodes,)
+        Rate of change of true longitude (rad/s)
+    cos_alpha : ndarray, shape (num_nodes,)
+        Cosine of sail cone angle (for constraint enforcement)
+    r : ndarray, shape (num_nodes, 3)
+        Cartesian position vectors in km
+    v : ndarray, shape (num_nodes, 3)
+        Cartesian velocity vectors in km/s
+    """
+
+    def initialize(self):
+        self.options.declare('num_nodes', types=int,
+                             desc='Number of nodes in the trajectory')
+
+    def setup(self):
+        num_nodes = self.options['num_nodes']
+
+        # Inputs - Modified Equinoctial Elements
+        self.add_input('p', shape=(num_nodes,), units='km',
+                       desc='Semi-latus rectum')
+        self.add_input('f', shape=(num_nodes,), units=None,
+                       desc='Eccentricity vector x-component')
+        self.add_input('g', shape=(num_nodes,), units=None,
+                       desc='Eccentricity vector y-component')
+        self.add_input('h', shape=(num_nodes,), units=None,
+                       desc='Inclination vector x-component')
+        self.add_input('k', shape=(num_nodes,), units=None,
+                       desc='Inclination vector y-component')
+        self.add_input('L', shape=(num_nodes,), units='rad',
+                       desc='True longitude')
+        self.add_input('u_n', shape=(num_nodes, 3), units='unitless',
+                       desc='Sail normal unit vectors')
+
+        # Outputs - MEE rates
+        self.add_output('pdot', shape=(num_nodes,), units='km/s',
+                        desc='Rate of change of semi-latus rectum')
+        self.add_output('fdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of f')
+        self.add_output('gdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of g')
+        self.add_output('hdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of h')
+        self.add_output('kdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of k')
+        self.add_output('Ldot', shape=(num_nodes,), units='rad/s',
+                        desc='Rate of change of true longitude')
+        self.add_output('cos_alpha', shape=(num_nodes,), units='unitless',
+                        desc='Cosine of sail cone angle')
+
+        # Additional outputs - Cartesian states for visualization/analysis
+        self.add_output('r', shape=(num_nodes, 3), units='km',
+                        desc='Cartesian position vectors')
+        self.add_output('v', shape=(num_nodes, 3), units='km/s',
+                        desc='Cartesian velocity vectors')
+
+        # Create vectorized version of modeq_ode
+        # modeq_ode signature: (p, f, g, h, k, L, u_n, mu, r0) -> (pdot, fdot, gdot, hdot, kdot, Ldot, cos_alpha, r_vec, v_vec)
+        # We need to vmap over the first axis (num_nodes) for p, f, g, h, k, L, u_n
+        # mu and r0 are broadcast (scalar constants)
+        self._modeq_ode_vec = jax.vmap(modeq_ode,
+                                       in_axes=(0, 0, 0, 0, 0, 0, 0, None, None))
+
+    def compute_primal(self, p, f, g, h, k, L, u_n):
+        """
+        Compute modified equinoctial element ODE derivatives.
+
+        Parameters
+        ----------
+        p : jnp.ndarray, shape (num_nodes,)
+            Semi-latus rectum in km
+        f : jnp.ndarray, shape (num_nodes,)
+            Eccentricity vector x-component
+        g : jnp.ndarray, shape (num_nodes,)
+            Eccentricity vector y-component
+        h : jnp.ndarray, shape (num_nodes,)
+            Inclination vector x-component
+        k : jnp.ndarray, shape (num_nodes,)
+            Inclination vector y-component
+        L : jnp.ndarray, shape (num_nodes,)
+            True longitude in radians
+        u_n : jnp.ndarray, shape (num_nodes, 3)
+            Sail normal unit vectors
+
+        Returns
+        -------
+        pdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of semi-latus rectum
+        fdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of f
+        gdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of g
+        hdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of h
+        kdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of k
+        Ldot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of true longitude
+        cos_alpha : jnp.ndarray, shape (num_nodes,)
+            Cosine of sail cone angle
+        r : jnp.ndarray, shape (num_nodes, 3)
+            Cartesian position vectors
+        v : jnp.ndarray, shape (num_nodes, 3)
+            Cartesian velocity vectors
+        """
+        pdot, fdot, gdot, hdot, kdot, Ldot, cos_alpha, r, v = self._modeq_ode_vec(
+            p, f, g, h, k, L, u_n, MU_ALTAIRA, R0
+        )
+
+        return pdot, fdot, gdot, hdot, kdot, Ldot, cos_alpha, r, v
+
+
+class ModeqRadialControlODEComp(om.JaxExplicitComponent):
+    """
+    OpenMDAO component that computes modified equinoctial element ODE derivatives.
+
+    This component propagates trajectories using modified equinoctial elements (MEE),
+    which avoid singularities for near-circular and near-equatorial orbits. The
+    solar sail perturbations are included in the dynamics.
+
+    This component assumes that the sail normal vector is computed internally.
+
+    Options
+    -------
+    num_nodes : int
+        Number of nodes in the trajectory
+
+    Inputs
+    ------
+    p : ndarray, shape (num_nodes,)
+        Semi-latus rectum in km
+    f : ndarray, shape (num_nodes,)
+        Eccentricity vector x-component (dimensionless)
+    g : ndarray, shape (num_nodes,)
+        Eccentricity vector y-component (dimensionless)
+    h : ndarray, shape (num_nodes,)
+        Inclination vector x-component (dimensionless)
+    k : ndarray, shape (num_nodes,)
+        Inclination vector y-component (dimensionless)
+    L : ndarray, shape (num_nodes,)
+        True longitude in radians
+
+    Outputs
+    -------
+    pdot : ndarray, shape (num_nodes,)
+        Rate of change of semi-latus rectum (km/s)
+    fdot : ndarray, shape (num_nodes,)
+        Rate of change of f (1/s)
+    gdot : ndarray, shape (num_nodes,)
+        Rate of change of g (1/s)
+    hdot : ndarray, shape (num_nodes,)
+        Rate of change of h (1/s)
+    kdot : ndarray, shape (num_nodes,)
+        Rate of change of k (1/s)
+    Ldot : ndarray, shape (num_nodes,)
+        Rate of change of true longitude (rad/s)
+    cos_alpha : ndarray, shape (num_nodes,)
+        Cosine of sail cone angle (for constraint enforcement)
+    r : ndarray, shape (num_nodes, 3)
+        Cartesian position vectors in km
+    v : ndarray, shape (num_nodes, 3)
+        Cartesian velocity vectors in km/s
+    u_n : ndarray, shape (num_nodes, 3)
+        Sail normal unit vectors (dimensionless)
+    """
+
+    def initialize(self):
+        self.options.declare('num_nodes', types=int,
+                             desc='Number of nodes in the trajectory')
+
+    def setup(self):
+        num_nodes = self.options['num_nodes']
+
+        # Inputs - Modified Equinoctial Elements
+        self.add_input('p', shape=(num_nodes,), units='km',
+                       desc='Semi-latus rectum')
+        self.add_input('f', shape=(num_nodes,), units=None,
+                       desc='Eccentricity vector x-component')
+        self.add_input('g', shape=(num_nodes,), units=None,
+                       desc='Eccentricity vector y-component')
+        self.add_input('h', shape=(num_nodes,), units=None,
+                       desc='Inclination vector x-component')
+        self.add_input('k', shape=(num_nodes,), units=None,
+                       desc='Inclination vector y-component')
+        self.add_input('L', shape=(num_nodes,), units='rad',
+                       desc='True longitude')
+
+        # Outputs - MEE rates
+        self.add_output('pdot', shape=(num_nodes,), units='km/s',
+                        desc='Rate of change of semi-latus rectum')
+        self.add_output('fdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of f')
+        self.add_output('gdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of g')
+        self.add_output('hdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of h')
+        self.add_output('kdot', shape=(num_nodes,), units='1/s',
+                        desc='Rate of change of k')
+        self.add_output('Ldot', shape=(num_nodes,), units='rad/s',
+                        desc='Rate of change of true longitude')
+        self.add_output('cos_alpha', shape=(num_nodes,), units='unitless',
+                        desc='Cosine of sail cone angle')
+
+        # Additional outputs - Cartesian states for visualization/analysis
+        self.add_output('r', shape=(num_nodes, 3), units='km',
+                        desc='Cartesian position vectors')
+        self.add_output('v', shape=(num_nodes, 3), units='km/s',
+                        desc='Cartesian velocity vectors')
+        
+        self.add_output('u_n', shape=(num_nodes, 3), units='unitless',
+                       desc='Sail normal unit vectors')
+
+        # Create vectorized version of modeq_ode
+        # modeq_ode signature: (p, f, g, h, k, L, u_n, mu, r0) -> (pdot, fdot, gdot, hdot, kdot, Ldot, cos_alpha, r_vec, v_vec)
+        # We need to vmap over the first axis (num_nodes) for p, f, g, h, k, L, u_n
+        # mu and r0 are broadcast (scalar constants)
+        self._modeq_ode_vec = jax.vmap(modeq_ode,
+                                       in_axes=(0, 0, 0, 0, 0, 0, 0, None, None))
+
+    def compute_primal(self, p, f, g, h, k, L, u_n):
+        """
+        Compute modified equinoctial element ODE derivatives.
+
+        Parameters
+        ----------
+        p : jnp.ndarray, shape (num_nodes,)
+            Semi-latus rectum in km
+        f : jnp.ndarray, shape (num_nodes,)
+            Eccentricity vector x-component
+        g : jnp.ndarray, shape (num_nodes,)
+            Eccentricity vector y-component
+        h : jnp.ndarray, shape (num_nodes,)
+            Inclination vector x-component
+        k : jnp.ndarray, shape (num_nodes,)
+            Inclination vector y-component
+        L : jnp.ndarray, shape (num_nodes,)
+            True longitude in radians
+        u_n : jnp.ndarray, shape (num_nodes, 3)
+            Sail normal unit vectors
+
+        Returns
+        -------
+        pdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of semi-latus rectum
+        fdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of f
+        gdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of g
+        hdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of h
+        kdot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of k
+        Ldot : jnp.ndarray, shape (num_nodes,)
+            Rate of change of true longitude
+        cos_alpha : jnp.ndarray, shape (num_nodes,)
+            Cosine of sail cone angle
+        r : jnp.ndarray, shape (num_nodes, 3)
+            Cartesian position vectors
+        v : jnp.ndarray, shape (num_nodes, 3)
+            Cartesian velocity vectors
+        """
+        pdot, fdot, gdot, hdot, kdot, Ldot, cos_alpha, r, v = self._modeq_ode_vec(
+            p, f, g, h, k, L, u_n, MU_ALTAIRA, R0
+        )
+
+        return pdot, fdot, gdot, hdot, kdot, Ldot, cos_alpha, r, v

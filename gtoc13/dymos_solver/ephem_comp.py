@@ -32,6 +32,7 @@ class EphemComp(om.JaxExplicitComponent):
         self.options.declare('bodies', types=Sequence,
                              desc='The bodies to be visited, in sequence')
 
+
     def setup(self):
         N = len(self.options['bodies'])
         self.add_input('t0', shape=(1,), val=0.0, units='gtoc_year', desc='Initial time')
@@ -52,11 +53,6 @@ class EphemComp(om.JaxExplicitComponent):
         self._ELEMENTS = tuple(tuple(row) for row in self._ELEMENTS.tolist())
 
         self._MU = MU_ALTAIRA
-        
-        # Set check_partials options for finite differencing
-        # Use relative step size because ephemeris data has limited resolution
-        # A 1% relative step ensures adequate resolution for derivative checks
-        self.set_check_partial_options(wrt='time', method='fd', step_calc='rel', step=0.01)
 
     def get_self_statics(self):
         """
@@ -116,3 +112,100 @@ class EphemComp(om.JaxExplicitComponent):
         dt_out = dt
 
         return event_pos, body_vel, dt_dtau, times, dt_out
+
+
+class EphemCompNoStartPlane(om.JaxExplicitComponent):
+    """
+    Ephemeris component that computes body position and velocity.
+
+    Note that n is the number of bodies to be visited.
+
+    Options:
+        units: One of 'km/s' or 'DU/TU'
+        bodies: A sequence of ints that are the bodies to be visited.
+
+    Inputs:
+        time: Time in seconds (n + 1,)
+        body_id: Body ID (discrete input)
+
+    Outputs:
+        r: Body position vector in km (n, 3)
+        v: Body velocity vector in km/s (n,)
+    """
+    def initialize(self):
+        self.options.declare('bodies', types=Sequence,
+                             desc='The bodies to be visited, in sequence')
+
+
+    def setup(self):
+        N = len(self.options['bodies'])
+        self.add_input('t0', shape=(1,), val=0.0, units='gtoc_year', desc='Initial time')
+        self.add_input('dt', shape=(N,), units='gtoc_year', desc='Transfer time for each event.')
+
+        self.add_output('body_pos', shape=(N, 3), units='km', desc='Positions at the starting time and each body intercept.')
+        self.add_output('body_vel', shape=(N, 3), units='km/s', desc='Intertial velocity of each body at intercept (km/s)')
+        self.add_output('dt_dtau', shape=(N,), units='gtoc_year', desc='Time span vs tau for each arc.')
+        self.add_output('times', shape=(N + 1,), units='gtoc_year', desc='Times of events')
+        self.add_output('dt_out', shape=(N,), units='gtoc_year', desc='dt echoed as an output to be connected downstream.')
+
+        self._ELEMENTS = jnp.zeros((N, 6))
+
+        for i, body_id in enumerate(self.options['bodies']):
+            self._ELEMENTS = self._ELEMENTS.at[i, :].set(bodies_data[body_id].elements.to_array())
+        self._ELEMENTS = tuple(tuple(row) for row in self._ELEMENTS.tolist())
+
+        self._MU = MU_ALTAIRA
+
+    def get_self_statics(self):
+        """
+        self._ELEMENTS is effectively a static input to the compute_primal
+        method. By declaring that here, jax will successfully handle any
+        changes that might happen to it, redoing just-in-time compilation
+        as necessary.
+
+        Note: We convert arrays to tuples to make them hashable for OpenMDAO.
+        """
+        # Convert JAX array to nested tuples so it's hashable
+        return (self._ELEMENTS, self._MU)
+
+    def compute_primal(self, t0, dt):
+        """Compute body ephemeris at given time and append to initial state.
+
+        Parameters
+        ----------
+        t0 : array
+            Initial time
+        dt : array
+            Time deltas for each arc
+        y0 : array
+            Initial y position
+        z0 : array
+            Initial z position
+        ELEMENTS_tuple : tuple of tuples
+            Orbital elements for each body (from get_self_statics, as nested tuples)
+        MU : float
+            Gravitational parameter (from get_self_statics)
+        """
+        # Convert hashable tuple back to JAX array for computation
+        ELEMENTS = jnp.array(self._ELEMENTS)
+
+        # Compute event times: t0, t0+dt[0], t0+dt[0]+dt[1], ...
+        # Note: times are in gtoc_year units (as specified in the input declaration)
+        times = jnp.concatenate((t0, t0 + jnp.cumsum(dt)))
+
+        # Convert times from gtoc_year to seconds for elements_to_pos_vel
+        # Since gtoc_year is defined as YEAR * s, and our inputs have units='gtoc_year',
+        # the values in compute_primal are the numeric values in gtoc_year units.
+        # But elements_to_pos_vel expects seconds, so we multiply by YEAR.
+        times_seconds = YEAR * times[1:]
+
+        # Using MU in km**3/s**2, make sure to pass times in seconds, not years.
+        body_pos, body_vel = elements_to_pos_vel(ELEMENTS, times_seconds, self._MU)
+
+        event_pos = body_pos
+
+        dt_dtau = dt / 2.0
+
+        dt_out = dt
+
+        return body_pos, body_vel, dt_dtau, times, dt_out
