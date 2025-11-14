@@ -72,18 +72,20 @@ class DisBody:
 
 @dataclass
 class ArcTable:
-    tofs: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})  # {kimj: {tof: float, dv: float}
+    tofs: dict = field(
+        default_factory=lambda: {tuple[int, int, int, int]: float}
+    )  # {kimj: {tof: float, dv: float}
     # dv_tot: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     pro_energy: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     pro_vinf_a: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
     pro_vinf_d: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
-    pro_min_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
-    pro_max_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    pro_dotprod_l: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    pro_dotprod_u: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     ret_energy: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     ret_vinf_a: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
     ret_vinf_d: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
-    ret_min_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
-    ret_max_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    ret_dotprod_l: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    ret_dotprod_u: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
 
 
 @dataclass
@@ -160,7 +162,9 @@ def lin_dots_penalty(r_i: np.array, r_j: np.array) -> np.float32:
 
 def vinf_penalty(vinf_in: np.float32) -> np.float32:
     # converts from DU/TU to km/s
-    return 0.2 + (np.exp(-vinf_in * KMPDU / (SPTU * 13))) / (1 + np.exp(-5 * (vinf_in * KMPDU / SPTU - 1.5)))
+    return 0.2 + (np.exp(-vinf_in * KMPDU / (SPTU * 13))) / (
+        1 + np.exp(-5 * (vinf_in * KMPDU / SPTU - 1.5))
+    )
 
 
 def dot_angle(vinf: np.float32, b_id: int, mode: str) -> np.float32:
@@ -201,7 +205,10 @@ def create_discrete_dataset(
             name=body.name,
             weight=body.weight,
             r_du=np.array(
-                [body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r for idx in range(num)]
+                [
+                    body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
+                    for idx in range(num)
+                ]
             ),
             t_tu=timesteps,
             tp_tu=np.float32(body.get_period(units="TU")),
@@ -237,26 +244,26 @@ def lambert_arc(k: int, ti: float, m: int, tof: float, debug: bool = False) -> d
     pro_energy = (norm(pro[0]) ** 2) / 2 - 1 / norm(r_ki)
     pro_vinf_a = pro[1] - np.array(v_mj)
     pro_vinf_d = pro[0] - np.array(v_ki)
-    pro_min_del = dot_angle(norm(pro_vinf_a), m, "min")
-    pro_max_del = dot_angle(norm(pro_vinf_a), m, "max")
+    pro_dotprod_l = dot_angle(norm(pro_vinf_a), m, "max")
+    pro_dotprod_u = dot_angle(norm(pro_vinf_a), m, "min")
 
     ret_energy = (norm(ret[0]) ** 2) / 2 - 1 / norm(r_ki)
     ret_vinf_a = ret[1] - np.array(v_mj)
     ret_vinf_d = ret[0] - np.array(v_ki)
-    ret_min_del = dot_angle(norm(ret_vinf_a), m, "min")
-    ret_max_del = dot_angle(norm(ret_vinf_a), m, "max")
+    ret_dotprod_l = dot_angle(norm(ret_vinf_a), m, "max")
+    ret_dotprod_u = dot_angle(norm(ret_vinf_a), m, "min")
 
     return (
         pro_energy,
         pro_vinf_a,
         pro_vinf_d,
-        pro_min_del,
-        pro_max_del,
+        pro_dotprod_l,
+        pro_dotprod_u,
         ret_energy,
         ret_vinf_a,
         ret_vinf_d,
-        ret_min_del,
-        ret_max_del,
+        ret_dotprod_l,
+        ret_dotprod_u,
     )
 
 
@@ -266,13 +273,13 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
     p_se = {}
     p_vi_a = {}
     p_vi_d = {}
-    p_del_l = {}
-    p_del_u = {}
+    p_dp_l = {}
+    p_dp_u = {}
     r_se = {}
     r_vi_a = {}
     r_vi_d = {}
-    r_del_l = {}
-    r_del_u = {}
+    r_dp_l = {}
+    r_dp_u = {}
     for kimj in tqdm(
         [
             (k, i, m, j)
@@ -291,13 +298,13 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
                 p_se[(k, i + 1, m, j + 1)],
                 p_vi_a[(k, i + 1, m, j + 1)],
                 p_vi_d[(k, i + 1, m, j + 1)],
-                p_del_l[(k, i + 1, m, j + 1)],
-                p_del_u[(k, i + 1, m, j + 1)],
+                p_dp_l[(k, i + 1, m, j + 1)],
+                p_dp_u[(k, i + 1, m, j + 1)],
                 r_se[(k, i + 1, m, j + 1)],
                 r_vi_a[(k, i + 1, m, j + 1)],
                 r_vi_d[(k, i + 1, m, j + 1)],
-                r_del_l[(k, i + 1, m, j + 1)],
-                r_del_u[(k, i + 1, m, j + 1)],
+                r_dp_l[(k, i + 1, m, j + 1)],
+                r_dp_u[(k, i + 1, m, j + 1)],
             ) = lambert_arc(k, timesteps[i], m, tof)
 
     arc_table = ArcTable(
@@ -305,13 +312,13 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
         pro_energy=p_se,
         pro_vinf_a=p_vi_a,
         pro_vinf_d=p_vi_d,
-        pro_min_del=p_del_l,
-        pro_max_del=p_del_u,
+        pro_dotprod_l=p_dp_l,
+        pro_dotprod_u=p_dp_u,
         ret_energy=r_se,
         ret_vinf_a=r_vi_a,
         ret_vinf_d=r_vi_d,
-        ret_min_del=r_del_l,
-        ret_max_del=r_del_u,
+        ret_dotprod_l=r_dp_l,
+        ret_dotprod_u=r_dp_u,
     )
     return arc_table
 
@@ -365,4 +372,6 @@ def plot_porkchop(
     else:
         output_path = Path.cwd() / "outputs"
         output_path.mkdir(exist_ok=True)
-        plotly.offline.plot(fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False)
+        plotly.offline.plot(
+            fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False
+        )

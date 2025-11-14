@@ -29,7 +29,7 @@ pidxs_params = IndexParams(
     seq_length=3,
     flyby_limit=1,
     gt_planets=3,
-    dv_limit=200.0,
+    dv_limit=150.0,
     dE_tol=15.0,
     # first_arcs=[(10, 9, 8, 7)],
 )
