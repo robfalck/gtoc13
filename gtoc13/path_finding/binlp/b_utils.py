@@ -18,7 +18,7 @@ from lamberthub import izzo2015
 import plotly
 import plotly.graph_objects as go
 
-from gtoc13 import YPTU, bodies_data, Body, MU_ALTAIRA
+from gtoc13 import YPTU, bodies_data, Body, SPTU, KMPDU
 
 
 np.set_printoptions(legacy="1.25")
@@ -72,16 +72,18 @@ class DisBody:
 
 @dataclass
 class ArcTable:
-    tofs: dict = field(
-        default_factory=lambda: {tuple[int, int, int, int]: float}
-    )  # {kimj: {tof: float, dv: float}
+    tofs: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})  # {kimj: {tof: float, dv: float}
     # dv_tot: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     pro_energy: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     pro_vinf_a: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
     pro_vinf_d: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
+    pro_min_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    pro_max_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     ret_energy: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
     ret_vinf_a: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
     ret_vinf_d: dict = field(default_factory=lambda: {tuple[int, int, int, int]: np.ndarray})
+    ret_min_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
+    ret_max_del: dict = field(default_factory=lambda: {tuple[int, int, int, int]: float})
 
 
 @dataclass
@@ -157,275 +159,24 @@ def lin_dots_penalty(r_i: np.array, r_j: np.array) -> np.float32:
 
 
 def vinf_penalty(vinf_in: np.float32) -> np.float32:
-    # for DU/TU units
-    if vinf_in < 2.35:
-        return 13.469 * vinf_in - 0.0142
-    else:
-        return (
-            -0.0192 * vinf_in**5
-            + 0.2069 * vinf_in**4
-            - 0.8811 * vinf_in**3
-            + 1.8804 * vinf_in**2
-            - 2.0656 * vinf_in
-            + 1.1715
+    # converts from DU/TU to km/s
+    return 0.2 + (np.exp(-vinf_in * KMPDU / (SPTU * 13))) / (1 + np.exp(-5 * (vinf_in * KMPDU / SPTU - 1.5)))
+
+
+def dot_angle(vinf: np.float32, b_id: int, mode: str) -> np.float32:
+    body = bodies_data[b_id]
+    f = 101 if mode == "min" else 1.1
+    dot_prod = (
+        (
+            np.arcsin(
+                (body.mu * (SPTU / KMPDU) ** 2 / (f * body.radius))
+                / (vinf**2 + (body.mu * (SPTU / KMPDU) ** 2 / (f * body.radius)))
+            )
+            * 2
         )
-
-
-def dotangle_min(vinf: np.float32, b_id: int) -> np.float32:
-    match b_id:
-        case 1:
-            dot_prod = (
-                -0.0072 * vinf**5
-                + 0.1039 * vinf**4
-                - 0.5393 * vinf**3
-                + 1.071 * vinf**2
-                + 0.0043 * vinf
-                - 1.0081
-            )
-        case 2:
-            dot_prod = (
-                0.0128 * vinf**5
-                - 0.1978 * vinf**4
-                + 1.1691 * vinf**3
-                - 3.2878 * vinf**2
-                + 4.3814 * vinf
-                - 1.2201
-            )
-
-        case 3:
-            if vinf < 2.42:
-                dot_prod = (
-                    -0.2266 * vinf**6
-                    + 2.2211 * vinf**5
-                    - 8.7353 * vinf**4
-                    + 17.544 * vinf**3
-                    - 18.865 * vinf**2
-                    + 10.249 * vinf
-                    - 1.2005
-                )
-            else:
-                dot_prod = 0.9997
-        case 4:
-            if vinf < 1.116:
-                dot_prod = (
-                    -5.2052 * vinf**4 + 17.381 * vinf**3 - 21.218 * vinf**2 + 11.231 * vinf - 1.1924
-                )
-            else:
-                dot_prod = 0.9999
-
-        case 5:
-            if vinf < 1.416:
-                dot_prod = (
-                    1.7535 * vinf**4 - 5.7851 * vinf**3 + 5.4358 * vinf**2 + 0.2489 * vinf - 1.0146
-                )
-            else:
-                dot_prod = 0.011 * vinf**3 - 0.1237 * vinf**2 + 0.4598 * vinf + 0.4298
-
-        case 6:
-            dot_prod = (
-                0.0063 * vinf**6
-                - 0.1031 * vinf**5
-                + 0.6479 * vinf**4
-                - 1.8878 * vinf**3
-                + 2.2357 * vinf**2
-                + 0.2692 * vinf
-                - 1.0311
-            )
-
-        case 7:
-            if vinf < 1.516:
-                dot_prod = (
-                    4.9725 * vinf**6
-                    - 26.501 * vinf**5
-                    + 54.764 * vinf**4
-                    - 53.667 * vinf**3
-                    + 22.6 * vinf**2
-                    - 0.258 * vinf
-                    - 1.0004
-                )
-            else:
-                dot_prod = -0.0028 * vinf**2 + 0.0218 * vinf + 0.9582
-
-        case 8:
-            if vinf < 1.016:
-                dot_prod = (
-                    5.5151 * vinf**4 - 13.68 * vinf**3 + 9.8893 * vinf**2 + 0.0724 * vinf - 1.0057
-                )
-            elif vinf < 3.715:
-                dot_prod = (
-                    -0.0206 * vinf**4 + 0.2278 * vinf**3 - 0.9334 * vinf**2 + 1.6946 * vinf - 0.168
-                )
-            else:
-                dot_prod = 0.9999
-
-        case 9:
-            if vinf < 1.51589:
-                dot_prod = (
-                    -1.8327 * vinf**5
-                    + 8.6614 * vinf**4
-                    - 14.843 * vinf**3
-                    + 9.963 * vinf**2
-                    - 0.2283 * vinf
-                    - 0.9981
-                )
-            else:
-                dot_prod = 0.0066 * vinf**3 - 0.0747 * vinf**2 + 0.281 * vinf + 0.6471
-
-        case 10:
-            if vinf < 0.81612:
-                dot_prod = (
-                    15.469 * vinf**4 - 29.675 * vinf**3 + 16.231 * vinf**2 + 0.3922 * vinf - 1.0117
-                )
-            else:
-                dot_prod = (
-                    -0.0016 * vinf**6
-                    + 0.0298 * vinf**5
-                    - 0.2311 * vinf**4
-                    + 0.9311 * vinf**3
-                    - 2.0559 * vinf**2
-                    + 2.3702 * vinf
-                    - 0.1293
-                )
-
-    return dot_prod
-
-
-def dotangle_max(vinf: np.float32, b_id: int) -> np.float32:
-    match b_id:
-        case 1:
-            if vinf < 0.715:
-                dot_prod = 9.1669 * vinf**3 - 17.04 * vinf**2 + 10.514 * vinf - 1.1815
-            else:
-                dot_prod = 0.0015 * vinf + 0.9946
-        case 2:
-            if vinf < 0.117:
-                dot_prod = 16.483 * vinf - 1.0121
-            else:
-                dot_prod = (
-                    -0.0011 * vinf**6
-                    + 0.0181 * vinf**5
-                    - 0.1159 * vinf**4
-                    + 0.3643 * vinf**3
-                    - 0.5786 * vinf**2
-                    + 0.4252 * vinf
-                    + 0.8932
-                )
-
-        case 3:
-            if vinf < 0.117:
-                dot_prod = 10.441 * vinf - 0.2197
-            else:
-                dot_prod = 0.0001 * vinf + 0.9996
-
-        case 4:
-            if vinf < 0.11635:
-                dot_prod = 9.0037 * vinf - 0.0506
-            else:
-                dot_prod = 1
-
-        case 5:
-            if vinf < 0.11635:
-                dot_prod = 15.894 * vinf - 1.1365
-            elif vinf < 1.416:
-                dot_prod = (
-                    -5.9664 * vinf**6
-                    + 30.566 * vinf**5
-                    - 62.319 * vinf**4
-                    + 64.273 * vinf**3
-                    - 35.094 * vinf**2
-                    + 9.5522 * vinf
-                    - 0.0104
-                )
-            else:
-                dot_prod = 0.99998
-
-        case 6:
-            if vinf < 1.116:
-                dot_prod = (
-                    21.075 * vinf**5
-                    - 73.869 * vinf**4
-                    + 99.059 * vinf**3
-                    - 63.253 * vinf**2
-                    + 19.214 * vinf
-                    - 1.242
-                )
-            else:
-                dot_prod = 0.999999
-
-        case 7:
-            if vinf < 0.11635:
-                dot_prod = 16.089 * vinf - 0.9315
-            elif vinf < 0.6162:
-                dot_prod = (
-                    -9.1064 * vinf**4 + 15.656 * vinf**3 - 9.762 * vinf**2 + 2.614 * vinf + 0.7456
-                )
-            else:
-                dot_prod = 0.99999
-
-        case 8:
-            if vinf < 0.11635:
-                dot_prod = 16.551 * vinf - 1.0791
-            elif vinf < 0.2165:
-                dot_prod = 1.3347 * vinf + 0.6914
-            elif vinf < 1.016:
-                dot_prod = (
-                    -2.7264 * vinf**6
-                    + 11.294 * vinf**5
-                    - 19.11 * vinf**4
-                    + 16.912 * vinf**3
-                    - 8.2716 * vinf**2
-                    + 2.1299 * vinf
-                    + 0.772
-                )
-            else:
-                dot_prod = 3e-6 * vinf**3 - 3e-5 * vinf**2 + 0.0001 * vinf + 0.9999
-
-        case 9:
-            if vinf < 0.5162:
-                dot_prod = (
-                    -268.28 * vinf**4 + 357 * vinf**3 - 168.7 * vinf**2 + 33.387 * vinf - 1.3423
-                )
-            elif vinf < 1.216:
-                dot_prod = (
-                    -0.0159 * vinf**4 + 0.0633 * vinf**3 - 0.0943 * vinf**2 + 0.0628 * vinf + 0.984
-                )
-            else:
-                dot_prod = (
-                    -5e-7 * vinf**6
-                    + 1e-5 * vinf**5
-                    - 9e-5 * vinf**4
-                    + 0.0004 * vinf**3
-                    - 0.0009 * vinf**2
-                    + 0.0012 * vinf
-                    + 0.9994
-                )
-
-        case 10:
-            if vinf < 0.11635:
-                dot_prod = 16.066 * vinf - 0.9277
-            elif vinf < 0.616186:
-                dot_prod = (
-                    31.241 * vinf**5
-                    - 66.149 * vinf**4
-                    + 54.758 * vinf**3
-                    - 22.165 * vinf**2
-                    + 4.3994 * vinf
-                    + 0.655
-                )
-            elif vinf < 1.51589:
-                dot_prod = (
-                    -0.0006 * vinf**4 + 0.0032 * vinf**3 - 0.0058 * vinf**2 + 0.0047 * vinf + 0.9985
-                )
-            else:
-                dot_prod = (
-                    -4e-8 * vinf**6
-                    + 8e-7 * vinf**5
-                    - 7e-6 * vinf**4
-                    + 3e-5 * vinf**3
-                    - 9e-5 * vinf**2
-                    + 0.0001 * vinf
-                    + 0.9999
-                )
+        if b_id <= 10
+        else 0
+    )
 
     return dot_prod
 
@@ -450,10 +201,7 @@ def create_discrete_dataset(
             name=body.name,
             weight=body.weight,
             r_du=np.array(
-                [
-                    body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r
-                    for idx in range(num)
-                ]
+                [body.get_state(timesteps[idx], time_units="TU", distance_units="DU").r for idx in range(num)]
             ),
             t_tu=timesteps,
             tp_tu=np.float32(body.get_period(units="TU")),
@@ -489,12 +237,27 @@ def lambert_arc(k: int, ti: float, m: int, tof: float, debug: bool = False) -> d
     pro_energy = (norm(pro[0]) ** 2) / 2 - 1 / norm(r_ki)
     pro_vinf_a = pro[1] - np.array(v_mj)
     pro_vinf_d = pro[0] - np.array(v_ki)
+    pro_min_del = dot_angle(norm(pro_vinf_a), m, "min")
+    pro_max_del = dot_angle(norm(pro_vinf_a), m, "max")
 
     ret_energy = (norm(ret[0]) ** 2) / 2 - 1 / norm(r_ki)
     ret_vinf_a = ret[1] - np.array(v_mj)
     ret_vinf_d = ret[0] - np.array(v_ki)
+    ret_min_del = dot_angle(norm(ret_vinf_a), m, "min")
+    ret_max_del = dot_angle(norm(ret_vinf_a), m, "max")
 
-    return pro_energy, pro_vinf_a, pro_vinf_d, ret_energy, ret_vinf_a, ret_vinf_d
+    return (
+        pro_energy,
+        pro_vinf_a,
+        pro_vinf_d,
+        pro_min_del,
+        pro_max_del,
+        ret_energy,
+        ret_vinf_a,
+        ret_vinf_d,
+        ret_min_del,
+        ret_max_del,
+    )
 
 
 @timer
@@ -503,9 +266,13 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
     p_se = {}
     p_vi_a = {}
     p_vi_d = {}
+    p_del_l = {}
+    p_del_u = {}
     r_se = {}
     r_vi_a = {}
     r_vi_d = {}
+    r_del_l = {}
+    r_del_u = {}
     for kimj in tqdm(
         [
             (k, i, m, j)
@@ -524,9 +291,13 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
                 p_se[(k, i + 1, m, j + 1)],
                 p_vi_a[(k, i + 1, m, j + 1)],
                 p_vi_d[(k, i + 1, m, j + 1)],
+                p_del_l[(k, i + 1, m, j + 1)],
+                p_del_u[(k, i + 1, m, j + 1)],
                 r_se[(k, i + 1, m, j + 1)],
                 r_vi_a[(k, i + 1, m, j + 1)],
                 r_vi_d[(k, i + 1, m, j + 1)],
+                r_del_l[(k, i + 1, m, j + 1)],
+                r_del_u[(k, i + 1, m, j + 1)],
             ) = lambert_arc(k, timesteps[i], m, tof)
 
     arc_table = ArcTable(
@@ -534,9 +305,13 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
         pro_energy=p_se,
         pro_vinf_a=p_vi_a,
         pro_vinf_d=p_vi_d,
+        pro_min_del=p_del_l,
+        pro_max_del=p_del_u,
         ret_energy=r_se,
         ret_vinf_a=r_vi_a,
         ret_vinf_d=r_vi_d,
+        ret_min_del=r_del_l,
+        ret_max_del=r_del_u,
     )
     return arc_table
 
@@ -590,6 +365,4 @@ def plot_porkchop(
     else:
         output_path = Path.cwd() / "outputs"
         output_path.mkdir(exist_ok=True)
-        plotly.offline.plot(
-            fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False
-        )
+        plotly.offline.plot(fig, filename=(output_path / (main_title + ".html")).as_posix(), auto_open=False)
