@@ -25,7 +25,8 @@ class TestDymosSolver(unittest.TestCase):
             cmd = [
                 'python',
                 '-m', 'gtoc13.dymos_solver',
-                '--bodies', '10', 
+                'solve_all',
+                '--bodies', '10',
                 '--flyby-times', '50',
                 '--controls', 'r',
                 '--max-time', '200',
@@ -60,7 +61,7 @@ class TestDymosSolver(unittest.TestCase):
                              "Solution file is empty")
             self.assertGreater(png_file.stat().st_size, 0,
                              "Plot file is empty")
-            
+
             solution_name2 = 'ten_nine2'
             txt_file2 = solutions_dir / f'{solution_name2}.txt'
             png_file2 = solutions_dir / f'{solution_name2}.png'
@@ -69,7 +70,8 @@ class TestDymosSolver(unittest.TestCase):
             cmd = [
                 'python',
                 '-m', 'gtoc13.dymos_solver',
-                '--bodies', '10', 
+                'solve_all',
+                '--bodies', '10',
                 '--flyby-times', '50',
                 '--controls', '1',  # Optimal control, load radial solution from previous
                 '--max-time', '50',
@@ -106,7 +108,7 @@ class TestDymosSolver(unittest.TestCase):
                              "Solution file is empty")
             self.assertGreater(png_file2.stat().st_size, 0,
                              "Plot file is empty")
-            
+
             sol1 = GTOC13Solution.load(txt_file)
             sol2 = GTOC13Solution.load(txt_file)
 
@@ -139,12 +141,12 @@ class TestDymosSolver(unittest.TestCase):
 
             assert_near_equal(flyby_arc_1.position,
                               flyby_arc_2.position)
-            
+
             assert_near_equal(flyby_arc_1.velocity_in,
                               flyby_arc_2.velocity_in)
-            
+
             assert_near_equal(flyby_arc_1.velocity_out,
-                              flyby_arc_2.velocity_out)       
+                              flyby_arc_2.velocity_out)
 
         except subprocess.TimeoutExpired:
             self.fail("dymos_solver execution timed out after 10 minutes")
@@ -174,7 +176,8 @@ class TestDymosSolver(unittest.TestCase):
             cmd = [
                 'python',
                 '-m', 'gtoc13.dymos_solver',
-                '--bodies', '10', '6', '4', '5', 
+                'solve_all',
+                '--bodies', '10', '6', '4', '5',
                 '--flyby-times', '20', '50', '70', '80',
                 '--controls', 'r', 'r', '0', '0',
                 '--max-time', '200',
@@ -211,7 +214,7 @@ class TestDymosSolver(unittest.TestCase):
                             "Solution file is empty")
             self.assertGreater(png_file.stat().st_size, 0,
                             "Plot file is empty")
-            
+
             sol1 = GTOC13Solution.load(sol_file)
             sol2 = GTOC13Solution.load(txt_file)
 
@@ -242,12 +245,12 @@ class TestDymosSolver(unittest.TestCase):
 
                 assert_near_equal(flyby_arc_1.position,
                                 flyby_arc_2.position)
-                
+
                 assert_near_equal(flyby_arc_1.velocity_in,
                                 flyby_arc_2.velocity_in)
-                
+
                 assert_near_equal(flyby_arc_1.velocity_out,
-                                flyby_arc_2.velocity_out)       
+                                flyby_arc_2.velocity_out)
 
         except subprocess.TimeoutExpired:
             self.fail("dymos_solver execution timed out after 10 minutes")
