@@ -160,7 +160,8 @@ def _guess_linear(phase, from_body, to_body, t1, t2, control):
     v_avg = (r2 - r1) / dt_arc_s
     v_kms = phase.interp('v', [v_avg, v_avg])
 
-    times_s = phase.interp('t', [t1, t2])
+    nodes_tau = phase.options['transcription'].grid_data.node_ptau
+    times_s = t1 + 0.5 * (nodes_tau + 1) * dt_arc_s
 
     if control == 0:
         u = np.zeros((1, 3))
@@ -234,6 +235,7 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
     r2 = np.array(r2, dtype=float, copy=True)
 
     lambert_sol = lambert(MU_ALTAIRA, r1, r2, dt_arc_s)
+
     v1 = lambert_sol[0]
     # v1, _, resid = vallado2013_jax(MU_ALTAIRA, r1, r2, dt_arc_s)
     nodes_tau = phase.options['transcription'].grid_data.node_ptau
@@ -323,8 +325,12 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
         if guess_arc is None or single_arc:
             # If we don't have a guess for this arc,
             # try lambert, which will fall back to linear if it fails to converge.
-            print(f'arc {i} attempting guess from lambert')
-            guess = _guess_lambert(phase, from_body, to_body, t_initial_s, t_final_s, controls[i])
+            if not single_arc and i==0:
+                print(f'arc {i} attempting linear guess')
+                guess = _guess_linear(phase, from_body, to_body, t_initial_s, t_final_s, controls[i])
+            else:
+                print(f'arc {i} attempting guess from lambert')
+                guess = _guess_lambert(phase, from_body, to_body, t_initial_s, t_final_s, controls[i])
         else:
             print(f'arc {i} attempting guess from solution')
             guess = _guess_from_solution(guess_arc)
