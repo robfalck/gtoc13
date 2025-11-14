@@ -99,7 +99,7 @@ def process_flybys(
     count_flybys = [
         ki
         for ki, v in model.z_ki.items()
-        if pyo.value(v) > 0.5 and model.x_kih[ki, model.H.at(-1)] != 1
+        if pyo.value(v) > 0.5 and pyo.value(model.x_kih[ki, model.H.at(-1)]) != 1
     ]
     if flyby_history:
         bodies = flyby_history.keys()

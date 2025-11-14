@@ -269,14 +269,16 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
         k, i, m, j = kimj
         tof = timesteps[j] - timesteps[i]
         if tof >= 0:
-            tofs[(k, i + 1, m, j + 1)] = tof
-            (
-                energy[(k, i + 1, m, j + 1)],
-                vinf_a[(k, i + 1, m, j + 1)],
-                vinf_d[(k, i + 1, m, j + 1)],
-                dotprod_l[(k, i + 1, m, j + 1)],
-                dotprod_u[(k, i + 1, m, j + 1)],
-            ) = lambert_arc(k, timesteps[i], m, tof)
+            arc_soln = lambert_arc(k, timesteps[i], m, tof)
+            if norm(arc_soln[1]) > 0.01638258 / 2:  # 0.25 km/s
+                (
+                    energy[(k, i + 1, m, j + 1)],
+                    vinf_a[(k, i + 1, m, j + 1)],
+                    vinf_d[(k, i + 1, m, j + 1)],
+                    dotprod_l[(k, i + 1, m, j + 1)],
+                    dotprod_u[(k, i + 1, m, j + 1)],
+                ) = arc_soln
+                tofs[(k, i + 1, m, j + 1)] = tof
 
     arc_table = ArcTable(
         tofs=tofs,

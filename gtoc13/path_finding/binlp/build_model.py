@@ -446,7 +446,7 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
 
     seq_model.L_arcs = pyo.Constraint(seq_model.KIMJ * seq_model.H, rule=h_arcs_expr)
 
-    print("...create L*_**ki and L*_ki** terms...")
+    print("...create L_**ki and L_ki** terms...")
     # if kimj have too much of an energy difference, it's invalid
     en_in = {}
     en_out = {}
