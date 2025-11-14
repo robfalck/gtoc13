@@ -326,7 +326,7 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
             print(f'arc {i} attempting guess from lambert')
             guess = _guess_lambert(phase, from_body, to_body, t_initial_s, t_final_s, controls[i])
         else:
-            print(r'arc {i} attempting guess from solution')
+            print(f'arc {i} attempting guess from solution')
             guess = _guess_from_solution(guess_arc)
 
         # Set the top level problem variables
