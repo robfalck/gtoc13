@@ -11,7 +11,7 @@ import numpy as np
 
 from gtoc13.constants import DAY, YEAR
 from gtoc13.dymos_solver.initial_guesses import set_initial_guesses
-from gtoc13.dymos_solver.solve_arcs import (
+from gtoc13.dymos_solver.solve_all import (
     get_dymos_serial_solver_problem,
     create_solution,
 )

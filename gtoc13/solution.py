@@ -3,7 +3,7 @@ GTOC13 Solution representation using Pydantic models.
 Based on the GTOC13 Solution File Format Specification.
 """
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import List, Literal, Tuple, TextIO
+from typing import Any, List, Literal, Tuple, TextIO
 import sys
 import numpy as np
 from pathlib import Path
@@ -11,7 +11,7 @@ from pathlib import Path
 from scipy.interpolate import BarycentricInterpolator
 from scipy.integrate import solve_ivp
 
-from gtoc13.constants import MU_ALTAIRA, R0, KMPDU
+from gtoc13.constants import MU_ALTAIRA, R0, KMPDU, YEAR
 from gtoc13.odes import solar_sail_ode, solar_sail_acceleration
 
 
@@ -264,9 +264,51 @@ class PropagatedArc(BaseModel):
 
         return self
 
-    def to_state_points(self) -> List[StatePoint]:
+    def to_state_points(self) -> list[StatePoint]:
         """Return the list of state points"""
         return self.state_points
+
+    def get_times(self) -> list[float]:
+        """Return the times of the arc in seconds."""
+        times = []
+        for s in self.state_points:
+            times.append(s.epoch)
+        return times
+
+    def get_positions(self) -> np.ndarray:
+        """Return the positions of the arc in km."""
+        pos = []
+        for s in self.state_points:
+            pos.append(s.position)
+        return np.array(pos)
+
+    def get_velocities(self) -> np.ndarray:
+        """Return the velocities of the arc in km/s."""
+        v = []
+        for s in self.state_points:
+            v.append(s.velocity)
+        return np.array(v)
+
+    def get_controls(self) -> np.ndarray:
+        """Return the control unit vectors in the arc."""
+        u = []
+        for s in self.state_points:
+            u.append(s.control)
+        return np.array(u)
+
+    def get_control_type(self) -> str:
+        """Return one of 'radial', 'N/A', or 'optimal'"""
+        u_hat = self.get_controls()
+
+        if np.all(np.abs(u_hat) < 1.0E-3):
+            return 'N/A'
+        else:
+            r = self.get_positions()
+            r_hat = r / np.linalg.norm(r, axis=-1, keepdims=True)
+            if np.all(np.abs(u_hat + r_hat) < 1.0E-3):
+                return 'radial'
+            else:
+                return 'optimal'
 
     @staticmethod
     def create(
@@ -405,6 +447,40 @@ class GTOC13Solution(BaseModel):
         for arc in self.arcs:
             all_points.extend(arc.to_state_points())
         return all_points
+
+    def get_bodies(self) -> list[int]:
+        """Return the sequence of bodies visited in this solution."""
+        bodies = []
+        for arc in self.arcs:
+            if isinstance(arc, FlybyArc):
+                bodies.append(arc.body_id)
+        return bodies
+
+    def get_flyby_times(self) -> list[float]:
+        """Return the sequence of flyby times (years) in this solution."""
+        times = []
+        for arc in self.arcs:
+            if isinstance(arc, FlybyArc):
+                times.append(arc.epoch / YEAR)
+        return times
+
+    def get_control_flags(self) -> list[Any]:
+        flags = []
+        for arc in self.arcs:
+            if isinstance(arc, PropagatedArc):
+                if arc.get_control_type() == 'radial':
+                    flags.append('r')
+                elif arc.get_control_type() == 'optimal':
+                    flags.append(1)
+                else:
+                    flags.append(0)
+            elif isinstance(arc, ConicArc):
+                flags.append(0)
+        return flags
+
+    def get_t0(self) -> float:
+        """Return the initial time (years) of the solution"""
+        return self.arcs[0].state_points[0].epoch / YEAR
 
     def write(self, stream: TextIO = sys.stdout, precision: int = 15) -> None:
         """

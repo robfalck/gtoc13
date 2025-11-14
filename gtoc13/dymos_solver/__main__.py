@@ -21,10 +21,10 @@ import numpy as np
 from gtoc13.dymos_solver.initial_guesses import set_initial_guesses
 from gtoc13.solution import GTOC13Solution
 from gtoc13.constants import YEAR
-from gtoc13.dymos_solver.solve_arcs import (
+from gtoc13.dymos_solver.solve_all import (
     get_dymos_serial_solver_problem,
     create_solution,
-    solve_arcs
+    solve_all_arcs
 )
 from gtoc13.dymos_solver.add_arc import add_arc
 
@@ -43,9 +43,9 @@ def control_type(value):
         raise ValueError(f"Control must be 0, 1, or 'r', got {value}")
 
 
-def _setup_solve_arcs_parser(subparsers):
+def _setup_solve_all_parser(subparsers):
     """
-    Set up the solve_arcs subcommand parser.
+    Set up the solve_all subcommand parser.
 
     Parameters
     ----------
@@ -57,30 +57,30 @@ def _setup_solve_arcs_parser(subparsers):
     argparse.ArgumentParser
         The configured solve_arcs parser
     """
-    solve_arcs_parser = subparsers.add_parser(
-        'solve_arcs',
+    solve_all_parser = subparsers.add_parser(
+        'solve_all',
         help='Solve trajectory arcs using Dymos optimization',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Solve with command-line arguments
-  python -m gtoc13.dymos_solver solve_arcs --bodies 10 9 --flyby-times 20.0 40.0
+  python -m gtoc13.dymos_solver solve_all --bodies 10 9 --flyby-times 20.0 40.0
 
   # Specify initial time and number of nodes
-  python -m gtoc13.dymos_solver solve_arcs --bodies 10 --flyby-times 20.0 --t0 5.0 --num-nodes 30
+  python -m gtoc13.dymos_solver solve_all --bodies 10 --flyby-times 20.0 --t0 5.0 --num-nodes 30
 
   # Specify control scheme for each arc
-  python -m gtoc13.dymos_solver solve_arcs --bodies 10 9 --flyby-times 20.0 40.0 --control 0 1
+  python -m gtoc13.dymos_solver solve_all --bodies 10 9 --flyby-times 20.0 40.0 --control 0 1
 
   # Load a solution file as an initial guess
-  python -m gtoc13.dymos_solver solve_arcs --bodies 9 8 7 --flyby-times 20 40 80 --max-time 150 --controls 0 0 0 --load solutions/dymos_solution_32.txt
+  python -m gtoc13.dymos_solver solve_all --bodies 9 8 7 --flyby-times 20 40 80 --max-time 150 --controls 0 0 0 --load solutions/dymos_solution_32.txt
 """
     )
 
     # Mission plan file or command-line arguments
-    input_group = solve_arcs_parser.add_mutually_exclusive_group(required=True)
+    # input_group = solve_all_parser.add_mutually_exclusive_group(required=True)
 
-    input_group.add_argument(
+    solve_all_parser.add_argument(
         '--bodies', '-b',
         type=int,
         nargs='+',
@@ -89,21 +89,21 @@ Examples:
     )
 
     # Additional arguments for command-line mode
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--flyby-times', '-f',
         type=float,
         nargs='+',
         metavar='TIME',
         help='Flyby times in years (space-separated floats, required with --bodies)'
     )
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--t0',
         type=float,
         default=0.0,
         help='Initial time in years (default: 0.0)'
     )
 
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--controls', '-c',
         type=control_type,
         nargs='+',
@@ -112,7 +112,7 @@ Examples:
     )
 
     # Solver options
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--num-nodes', '-n',
         type=int,
         nargs='+',
@@ -120,20 +120,20 @@ Examples:
         help='Number of collocation nodes per arc (default: 20)'
     )
 
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--no-opt',
         action='store_true',
         help='If given, just run through the model once without optimization.'
     )
 
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--max-time',
         type=float,
         default=199.999,
         help='Maximum allowable final time in years. (default: 199.999)'
     )
 
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--load', '-l',
         type=str,
         nargs='+',
@@ -142,28 +142,28 @@ Examples:
         help='File(s) from which to load the solution. If multiple, they are concatenated.'
     )
 
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--name',
         type=str,
         default=None,
         help='Root name of solution file to be saved. This will overwrite existing files of the same name!'
     )
 
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--obj',
         type=str,
         default='J',
         help='Objective to be used. Either "J" to maximize GTOC objective or "E" to minimize final energy'
     )
 
-    solve_arcs_parser.add_argument(
+    solve_all_parser.add_argument(
         '--mode', '-m',
         type=str,
         default='opt',
         help='Mode of operation: "opt", "feas", or "run"'
     )
 
-    return solve_arcs_parser
+    return solve_all_parser
 
 
 def _setup_add_arc_parser(subparsers):
@@ -247,19 +247,6 @@ Examples:
     )
 
     add_arc_parser.add_argument(
-        '--opt-existing',
-        action='store_true',
-        help='If specified, optimize design variables from existing arcs; otherwise treat them as fixed'
-    )
-
-    add_arc_parser.add_argument(
-        '--name',
-        type=str,
-        default=None,
-        help='Root name of solution file to be saved. This will overwrite existing files of the same name!'
-    )
-
-    add_arc_parser.add_argument(
         '--obj',
         type=str,
         default='J',
@@ -281,7 +268,7 @@ def main():
     subparsers.required = True
 
     # Set up subcommand parsers
-    _setup_solve_arcs_parser(subparsers)
+    _setup_solve_all_parser(subparsers)
     _setup_add_arc_parser(subparsers)
 
     # Parse arguments
@@ -291,8 +278,8 @@ def main():
     if args.command == 'add_arc':
         add_arc(args)
 
-    elif args.command == 'solve_arcs':
-        solve_arcs(args)
+    elif args.command == 'solve_all':
+        solve_all_arcs(args)
 
 
 if __name__ == '__main__':

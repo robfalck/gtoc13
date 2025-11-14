@@ -75,6 +75,7 @@ def _guess_from_solution(guess_arc):
     dt_arc_s = t_final_s - t_initial_s
 
     return {'t_initial': t_initial_s,
+            'times_s': times_s,
             'dt': dt_arc_s,
             'r': r_km,
             'v': v_kms,
@@ -159,6 +160,8 @@ def _guess_linear(phase, from_body, to_body, t1, t2, control):
     v_avg = (r2 - r1) / dt_arc_s
     v_kms = phase.interp('v', [v_avg, v_avg])
 
+    times_s = phase.interp('t', [t1, t2])
+
     if control == 0:
         u = np.zeros((1, 3))
     else:
@@ -166,6 +169,7 @@ def _guess_linear(phase, from_body, to_body, t1, t2, control):
         u = -r_km / r_mag
 
     return {'t_initial': t1,
+            'times_s': times_s,
             'dt': dt_arc_s,
             'r': r_km,
             'v': v_kms,
@@ -232,6 +236,8 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
     lambert_sol = lambert(MU_ALTAIRA, r1, r2, dt_arc_s)
     v1 = lambert_sol[0]
     # v1, _, resid = vallado2013_jax(MU_ALTAIRA, r1, r2, dt_arc_s)
+    nodes_tau = phase.options['transcription'].grid_data.node_ptau
+    node_times = t1 + 0.5 * (nodes_tau + 1) * dt_arc_s
 
     if np.any(np.isnan(v1)):
         print(f'{phase.name}: Lambert solve failed - falling back to linear guess' )
@@ -240,8 +246,6 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
         r_km = guess['r']
         v_kms = guess['v']
     else:
-        nodes_tau = phase.options['transcription'].grid_data.node_ptau
-        node_times = t1 + (t2 - t1) * nodes_tau
         r_km, v_kms = propagate_ballistic(r1, v1, node_times)
 
     if control == 0:
@@ -251,28 +255,34 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
         u = -r_km / r_mag
 
     return {'t_initial': t1,
+            'times_s': node_times,
             'dt': dt_arc_s,
             'r': r_km,
             'v': v_kms,
             'u': u}
 
-
 def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
-                        guess_solution=None):
+                        guess_solution=None, single_arc=False):
     from gtoc13.constants import YEAR
 
     # Set initial guess values
     N = len(bodies)
 
-    _t0 = np.array(t0).reshape((1,))
-    all_times_yr = np.concatenate((_t0, flyby_times))
-    dt_yr = np.diff(all_times_yr)
+    if single_arc:
+        dt_yr = np.diff(flyby_times)
+    else:
+        _t0 = np.array(t0).reshape((1,))
+        all_times_yr = np.concatenate((_t0, flyby_times))
+        dt_yr = np.diff(all_times_yr)
 
     # Set t0 and dt
     prob.set_val('t0', t0, units='gtoc_year')
     prob.set_val('dt', dt_yr, units='gtoc_year')
-    prob.set_val('y0', 0.0, units='km')
-    prob.set_val('z0', 0.0, units='km')
+    if single_arc:
+        prob.set_val('v_in_prev_flyby', guess_solution.arcs[-1].velocity_in, units='km/s')
+    else:
+        prob.set_val('y0', 0.0, units='km')
+        prob.set_val('z0', 0.0, units='km')
 
     # Get body positions and velocities at flyby times
     # Convert flyby times to seconds for get_state
@@ -289,9 +299,16 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
         non_flyby_arcs = []
 
     # Set initial guess for positions and velocities and controls for each arc
-    _bodies = [-1] + bodies
-    _times = [t0 * YEAR] + flyby_times_s
-    for i in range(N):
+    if single_arc:
+        _bodies = bodies
+        _times = flyby_times_s
+    else:
+        _bodies = [-1] + bodies
+        _times = [t0 * YEAR] + flyby_times_s
+
+    num_arcs = (N-1 if single_arc else N)
+
+    for i in range(num_arcs):
         phase = prob.model.traj.phases._get_subsystem(f'arc_{i}')
         from_body = _bodies[i]
         to_body = _bodies[i+1]
@@ -303,23 +320,25 @@ def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
         except IndexError:
             guess_arc = None
 
-        if guess_arc is None:
+        if guess_arc is None or single_arc:
             # If we don't have a guess for this arc,
             # try lambert, which will fall back to linear if it fails to converge.
+            print(f'arc {i} attempting guess from lambert')
             guess = _guess_lambert(phase, from_body, to_body, t_initial_s, t_final_s, controls[i])
         else:
+            print(r'arc {i} attempting guess from solution')
             guess = _guess_from_solution(guess_arc)
 
         # Set the top level problem variables
-        if i == 0:
+        if i == 0 and not single_arc:
             prob.set_val('t0', guess['t_initial'], units='s')
             prob.set_val('y0', guess['r'][0, 1], units='km')
             prob.set_val('z0', guess['r'][0, 2], units='km')
         prob.set_val('dt', guess['dt'] / YEAR, indices=[i], units='gtoc_year')
 
         # Set the phase states
-        phase.set_state_val('r', guess['r'], units='km')
-        phase.set_state_val('v', guess['v'], units='km/s')
+        phase.set_state_val('r', guess['r'], time_vals=guess['times_s'], units='km')
+        phase.set_state_val('v', guess['v'], time_vals=guess['times_s'], units='km/s')
 
         # Set the phase controls
         if controls[i] == 0:
