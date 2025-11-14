@@ -46,6 +46,7 @@ class IndexParams:
     gt_planets: int
     dv_limit: Optional[float]
     dE_tol: float  # km**2/s**2
+    dot_tol: float = 0.95
     first_arcs: Optional[None | list[int | tuple[int, tuple[int, int]]]] = (
         None  # integer of body, or body with bounds on timesteps
     )

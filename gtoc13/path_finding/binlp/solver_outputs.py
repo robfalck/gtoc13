@@ -21,13 +21,15 @@ def run_solver(
         print("...writing .nl file for debugging...")
         Path.mkdir(output_path, exist_ok=True)
         model.write(output_path / f"sequence_{iter}.nl", format="nl")
-    solver = SolverFactory(solver_params.solver_name, solver_io="nl")
+    solver = (
+        SolverFactory(solver_params.solver_name, solver_io="nl")
+        if solver_params.solver_name == "scip"
+        else pyo.SolverFactory(solver_params.solver_name)
+    )
     results = solver.solve(
         model,
         tee=solver_params.toconsole,
-        options={"limits/gap": solver_params.soln_gap}
-        if solver_params.solver_name == "scip"
-        else None,
+        options={"limits/gap": solver_params.soln_gap} if solver_params.solver_name == "scip" else None,
         logfile=output_path / f"solverlog_{iter}.txt" if solver_params.write_log else None,
     )
     return results, solver
@@ -63,8 +65,7 @@ def process_arcs(model: pyo.ConcreteModel, short_sequence: list[tuple[int, int]]
     if model.find_component("Lp_kimj"):
         print(
             "Number of lambert arcs: ",
-            int(round(pyo.value(pyo.summation(model.Lp_kimj))))
-            + int(round(pyo.value(pyo.summation(model.Lr_kimj)))),
+            int(round(pyo.value(pyo.summation(model.Lp_kimj)))) + int(round(pyo.value(pyo.summation(model.Lr_kimj)))),
             "\n",
         )
         print("Lambert arcs (k, i) to (m, j):")
@@ -131,9 +132,7 @@ def process_flybys(
 
 
 @timer
-def generate_iterative_solutions(
-    model: pyo.ConcreteModel, solver_params: SolverParams
-) -> list[list[SequenceTarget]]:
+def generate_iterative_solutions(model: pyo.ConcreteModel, solver_params: SolverParams) -> list[list[SequenceTarget]]:
     print(f">>>>> RUN SOLVER FOR {solver_params.solv_iter} ITERATIONS(S) >>>>>")
     for iter in range(solver_params.solv_iter):
         print(f"...solving iteration {iter + 1}...")

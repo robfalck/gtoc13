@@ -20,17 +20,17 @@ from gtoc13.path_finding.binlp.problems import run_basic_problem, run_trajectory
 
 ############### EDIT CONFIG ###############
 debug = False
-input_dict = dict(Yo=3, Yf=38, perYear=0.5, bodies_data=bodies_data)
+input_dict = dict(Yo=48, Yf=68, perYear=0.25, bodies_data=bodies_data)
 discrete_data, k_body, num, timesteps = create_discrete_dataset(**input_dict)
 arc_table = build_arc_table(k_body, timesteps)
 pidxs_params = IndexParams(
     bodies_ID=k_body,
     n_timesteps=num,
-    seq_length=3,
+    seq_length=2,
     flyby_limit=1,
-    gt_planets=3,
-    dv_limit=150.0,
-    dE_tol=15.0,
+    gt_planets=2,
+    dv_limit=175.0,
+    dE_tol=25.0,
     # first_arcs=[(10, 9, 8, 7)],
 )
 solv_params = SolverParams(
