@@ -18,7 +18,7 @@ from lamberthub import izzo2015
 import plotly
 import plotly.graph_objects as go
 
-from gtoc13 import YPTU, bodies_data, Body, SPTU, KMPDU
+from gtoc13 import YPTU, bodies_data, Body, SPTU, KMPDU, DAY
 
 
 np.set_printoptions(legacy="1.25")
@@ -45,8 +45,8 @@ class IndexParams:
     flyby_limit: int
     gt_planets: int
     gt_smalls: int
-    dv_limit: Optional[float]
-    dE_tol: float  # km**2/s**2
+    dv_limit: float = 200
+    dE_tol: float = 10  # km**2/s**2
     dot_tol: float = 0.95
     first_arcs: Optional[None | list[int | tuple[int, tuple[int, int]]]] = (
         None  # integer of body, or body with bounds on timesteps
@@ -268,9 +268,10 @@ def build_arc_table(body_list: list[int], timesteps: np.ndarray) -> ArcTable:
     ):
         k, i, m, j = kimj
         tof = timesteps[j] - timesteps[i]
-        if tof >= 0:
+        dt_tol = DAY / SPTU if k != m else bodies_data[k].get_period(units="TU")
+        if tof >= dt_tol:
             arc_soln = lambert_arc(k, timesteps[i], m, tof)
-            if norm(arc_soln[1]) > 0.01638258 / 2:  # 0.25 km/s
+            if norm(arc_soln[1]) > 0.01638258 * 2:  # 1km/s
                 (
                     energy[(k, i + 1, m, j + 1)],
                     vinf_a[(k, i + 1, m, j + 1)],

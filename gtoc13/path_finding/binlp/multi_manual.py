@@ -14,14 +14,14 @@ from gtoc13.path_finding.binlp.problems import run_segment_problem
 import numpy as np
 
 # ############### CONFIG 1 ###############
-input_dict_1 = dict(Yo=60, Yf=85, perYear=0.5, bodies_data=bodies_data)
+input_dict_1 = dict(Yo=100, Yf=140, perYear=0.5, bodies_data=bodies_data)
 discrete_data_1, k_body_1, num_1, timesteps_1 = create_discrete_dataset(**input_dict_1)
 arc_table_1 = build_arc_table(k_body_1, timesteps_1)
 pidxs_params_1 = IndexParams(
     bodies_ID=k_body_1,
     n_timesteps=num_1,
     seq_length=3,
-    flyby_limit=3,
+    flyby_limit=1,
     gt_planets=3,
     gt_smalls=3,
     dv_limit=175.0,  # km/s
