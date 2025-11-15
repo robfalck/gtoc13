@@ -74,8 +74,8 @@ def hohmann_tof_bounds(a1_km: float, a2_km: float, mu: float) -> Tuple[float, fl
     T_H = math.pi * math.sqrt(a_t**3 / mu)
     P1 = 2.0 * math.pi * math.sqrt(a1_km**3 / mu)
     P2 = 2.0 * math.pi * math.sqrt(a2_km**3 / mu)
-    tmin = max(0.1 * T_H, 5.0 * DAY)
-    tmax = min(1.0 * T_H, 2.0 * max(P1, P2))
+    tmin = max(0.05 * T_H, 5.0 * DAY)
+    tmax = min(2.0 * T_H, 2.0 * max(P1, P2))
     return tmin / DAY, tmax / DAY
 
 
@@ -164,6 +164,27 @@ def mission_score(config: LambertConfig, registry: BodyRegistry, path: Sequence[
     return float(np.asarray(score))
 
 
+def _attach_mission_raw_total(
+    config: LambertConfig,
+    registry: BodyRegistry,
+    prefix: Sequence[Encounter],
+    child: Encounter,
+    *,
+    candidate_path: Optional[Sequence[Encounter]] = None,
+    precomputed_total: Optional[float] = None,
+) -> Encounter:
+    """
+    Ensure the child Encounter carries the latest mission-raw total regardless of score mode.
+    """
+
+    if precomputed_total is not None:
+        total = float(precomputed_total)
+    else:
+        path = tuple(prefix) + (child,) if candidate_path is None else tuple(candidate_path)
+        total = mission_score(config, registry, path)
+    return replace(child, J_total_raw=total)
+
+
 def score_leg_mission(
     config: LambertConfig,
     registry: BodyRegistry,
@@ -173,7 +194,8 @@ def score_leg_mission(
     meta: LambertLegMeta,
 ) -> Tuple[float, Encounter]:
     candidate_path = tuple(prefix) + (child,)
-    total_score = mission_score(config, registry, candidate_path)
+    total_raw = mission_score(config, registry, candidate_path)
+    total_score = total_raw
     if config.tof_max_days:
         tof_days = float(getattr(meta.proposal, "tof", 0.0))
         remaining_budget = float(config.tof_max_days - child.t)
@@ -181,7 +203,7 @@ def score_leg_mission(
         scale = max(tof_days / effective_remaining, 1e-6)
         total_score /= scale
     child_contrib = total_score - parent.J_total
-    updated_child = replace(child, J_total=total_score)
+    updated_child = replace(child, J_total=total_score, J_total_raw=total_raw)
     return child_contrib, updated_child
 
 
@@ -194,9 +216,9 @@ def score_leg_mission_raw(
     meta: LambertLegMeta,
 ) -> Tuple[float, Encounter]:
     candidate_path = tuple(prefix) + (child,)
-    total_score = mission_score(config, registry, candidate_path)
-    child_contrib = total_score - parent.J_total
-    updated_child = replace(child, J_total=total_score)
+    total_raw = mission_score(config, registry, candidate_path)
+    child_contrib = total_raw - parent.J_total
+    updated_child = replace(child, J_total=total_raw, J_total_raw=total_raw)
     return child_contrib, updated_child
 
 
@@ -210,7 +232,7 @@ def score_leg_medium(
 ) -> Tuple[float, Encounter]:
     tof_days = float(getattr(meta.proposal, "tof", 0.0))
     if tof_days <= 0.0:
-        return 0.0, child
+        return 0.0, _attach_mission_raw_total(config, registry, prefix, child)
 
     body = bodies_data.get(child.body)
     weight = registry.weights.get(child.body)
@@ -247,11 +269,11 @@ def score_leg_medium(
     hp_max = 100.0 * radius_parent if radius_parent > 0.0 else 0.0
     slack = _turn_slack(parent.vinf_in_vec, meta.vinf_out_vec, mu_parent, radius_parent, hp_min, hp_max)
     if slack is None:
-        return 0.0, child
+        return 0.0, _attach_mission_raw_total(config, registry, prefix, child)
 
     base = weight * seasonal * vinf_bonus * (0.5 + 0.5 * slack)
     if base <= 0.0:
-        return 0.0, child
+        return 0.0, _attach_mission_raw_total(config, registry, prefix, child)
 
     if config.tof_max_days:
         remaining_budget = float(config.tof_max_days - child.t)
@@ -274,6 +296,7 @@ def score_leg_medium(
     if is_new_planet:
         increment += PLANET_NOVELTY_BONUS
     updated_child = replace(child, J_total=parent.J_total + increment)
+    updated_child = _attach_mission_raw_total(config, registry, prefix, updated_child)
     return increment, updated_child
 
 
@@ -287,7 +310,7 @@ def score_leg_simple(
 ) -> Tuple[float, Encounter]:
     tof_days = float(getattr(meta.proposal, "tof", 0.0))
     if tof_days <= 0.0:
-        return 0.0, child
+        return 0.0, _attach_mission_raw_total(config, registry, prefix, child)
     body = bodies_data.get(child.body)
     weight = registry.weights.get(child.body, 0.0)
     vinf_mag = child.vinf_in or 0.0
@@ -307,6 +330,7 @@ def score_leg_simple(
     if is_planet and is_new_visit:
         increment += PLANET_NOVELTY_BONUS
     updated_child = replace(child, J_total=parent.J_total + increment)
+    updated_child = _attach_mission_raw_total(config, registry, prefix, updated_child)
     return increment, updated_child
 
 
@@ -320,7 +344,7 @@ def score_leg_depth(
 ) -> Tuple[float, Encounter]:
     tof_days = float(getattr(meta.proposal, "tof", 0.0))
     if tof_days <= 0.0:
-        return 0.0, child
+        return 0.0, _attach_mission_raw_total(config, registry, prefix, child)
     body = bodies_data.get(child.body)
     weight = registry.weights.get(child.body, 0.0)
     vinf_mag = child.vinf_in or 0.0
@@ -355,6 +379,7 @@ def score_leg_depth(
     if is_planet and is_new_visit:
         incremental += PLANET_NOVELTY_BONUS
     updated_child = replace(child, J_total=parent.J_total + incremental)
+    updated_child = _attach_mission_raw_total(config, registry, prefix, updated_child)
     return incremental, updated_child
 
 

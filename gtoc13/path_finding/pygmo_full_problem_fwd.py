@@ -211,11 +211,13 @@ class SailPropagator:
         *,
         accel_smoothing: float = 0.0,
         opts: IntOptions = IntOptions(),
+        use_solar_sail: bool = True,
     ):
         self.mu = mu_star
         self.sail = sail
         self.opts = opts
         self.accel_smoothing = max(0.0, accel_smoothing)
+        self.use_solar_sail = use_solar_sail
         solver_cls = self._SOLVERS.get((opts.solver or "tsit5").lower(), dfx.Tsit5)
         self._solver = solver_cls()
         self._ode_term = dfx.ODETerm(self._rhs)
@@ -228,7 +230,10 @@ class SailPropagator:
         v = y[3:]
         rnorm = jnp.linalg.norm(r)
         acc_grav = -mu_star * r / (jnp.power(rnorm, 3) + 1e-30)
-        acc_sail = sail_accel(r, v, alpha, sigma, a0)
+        if self.use_solar_sail:
+            acc_sail = sail_accel(r, v, alpha, sigma, a0)
+        else:
+            acc_sail = jnp.zeros_like(r)
 
         def _smooth(_):
             mag = jnp.linalg.norm(acc_sail)
@@ -404,6 +409,7 @@ class ProblemOptions:
     accel_smoothing: float = 0.0  # min sail accel (km/s^2) applied via smoothing floor
     use_jit: bool = True  # compile fitness/jacobian with jax.jit for speed when True
     objective_scale: Optional[float] = None  # optional manual scaling of the objective value
+    use_solar_sail: bool = True  # disable to fly purely under 2-body dynamics
 
 
 class GTOC13TourUDP:
@@ -436,10 +442,19 @@ class GTOC13TourUDP:
         self.t_guess = list(t_guess_s)
         self.cat = catalog
         self.mu = mu_star_km3_s2
-        self.prop = SailPropagator(mu_star_km3_s2, sail, accel_smoothing=opts.accel_smoothing)
+        self.prop = SailPropagator(
+            mu_star_km3_s2,
+            sail,
+            accel_smoothing=opts.accel_smoothing,
+            use_solar_sail=opts.use_solar_sail,
+        )
         self.sail = sail
         self.leg_ctrl = leg_ctrl
         self.popts = opts
+        self.controls_enabled = bool(opts.use_solar_sail)
+        self._ctrl_shape = (self.leg_ctrl.nseg_leg, 2)
+        self._zero_ctrls_np = np.zeros(self._ctrl_shape)
+        self._zero_ctrls_jax = jnp.zeros(self._ctrl_shape, dtype=jnp.float64)
         self._has_interstellar_dir_constraint = (
             self.M > 0
             and self.seq[0] == INTERSTELLAR_BODY_ID
@@ -476,8 +491,11 @@ class GTOC13TourUDP:
         self.idx_ctrl = []
         npar_leg = 2 * self.leg_ctrl.nseg_leg
         for j in range(self.M):
-            self.idx_ctrl.append((idx, idx + npar_leg))
-            idx += npar_leg
+            if self.controls_enabled and npar_leg > 0:
+                self.idx_ctrl.append((idx, idx + npar_leg))
+                idx += npar_leg
+            else:
+                self.idx_ctrl.append((None, None))
         self.nx = idx
         self._grad_sparsity = [(0, col) for col in range(self.nx)]
 
@@ -487,8 +505,10 @@ class GTOC13TourUDP:
             cols = {self.idx_t[j], self.idx_t[j + 1]}
             lo, hi = self.idx_vinf[j]
             cols.update(range(lo, hi))
-            lo, hi = self.idx_ctrl[j]
-            cols.update(range(lo, hi))
+            ctrl_idx = self.idx_ctrl[j]
+            if ctrl_idx[0] is not None:
+                lo, hi = ctrl_idx
+                cols.update(range(lo, hi))
             self._leg_columns.append(sorted(cols))
 
     def _build_constraint_sparsity(self) -> None:
@@ -549,7 +569,10 @@ class GTOC13TourUDP:
         radii: List[float] = []
         body_mu: List[float] = []
         periods: List[float] = []
-        state_fns = []
+        elem_stack: List[jnp.ndarray] = []
+        has_elem: List[bool] = []
+        fixed_r: List[jnp.ndarray] = []
+        fixed_v: List[jnp.ndarray] = []
         for body_id in self.seq:
             body = self.cat._body(body_id)
             radii.append(float(body.radius))
@@ -561,24 +584,22 @@ class GTOC13TourUDP:
             elems = getattr(body, "elements", None)
             if elems is None:
                 r0, v0 = self.cat.state(body_id, 0.0)
-                r0 = jnp.asarray(r0, dtype=jnp.float64)
-                v0 = jnp.asarray(v0, dtype=jnp.float64)
-
-                def _fixed_fn(tt, r=r0, v=v0):
-                    return r, v
-
-                state_fns.append(_fixed_fn)
+                elem_stack.append(jnp.zeros(6, dtype=jnp.float64))
+                has_elem.append(False)
+                fixed_r.append(jnp.asarray(r0, dtype=jnp.float64))
+                fixed_v.append(jnp.asarray(v0, dtype=jnp.float64))
             else:
-                elem_vec = _elements_vector(body)
-
-                def _kepler_fn(tt, elem=elem_vec):
-                    return keplerian_state(elem, self.mu, tt)
-
-                state_fns.append(_kepler_fn)
-        self._body_state_fns = state_fns
-        self._seq_radii = radii
-        self._seq_body_mu = body_mu
-        self._seq_periods = periods
+                elem_stack.append(_elements_vector(body))
+                has_elem.append(True)
+                fixed_r.append(jnp.zeros(3, dtype=jnp.float64))
+                fixed_v.append(jnp.zeros(3, dtype=jnp.float64))
+        self._seq_elements = jnp.stack(elem_stack)
+        self._seq_has_elements = jnp.asarray(has_elem, dtype=jnp.bool_)
+        self._seq_fixed_r = jnp.stack(fixed_r)
+        self._seq_fixed_v = jnp.stack(fixed_v)
+        self._seq_radii = jnp.asarray(radii, dtype=jnp.float64)
+        self._seq_body_mu = jnp.asarray(body_mu, dtype=jnp.float64)
+        self._seq_periods = jnp.asarray(periods, dtype=jnp.float64)
 
     def _build_autodiff_handles(self) -> None:
         def fitness_fn(vec):
@@ -598,7 +619,7 @@ class GTOC13TourUDP:
         # Times bounded to mission window [0, 200 years], scaled
         for k in self.idx_t:
             lb[k] = 0.0
-            ub[k] = 200.0
+            ub[k] = 2.0
         if (not self.popts.optimize_t0) and self.idx_t:
             t0_scaled = self.t_guess[0] / T_REF
             lb[self.idx_t[0]] = t0_scaled
@@ -613,6 +634,8 @@ class GTOC13TourUDP:
         alpha_min = 1e-4
         alpha_max = 0.5 * math.pi - 1e-4
         for lo, hi in self.idx_ctrl:
+            if lo is None or hi is None:
+                continue
             for k in range(lo, hi, 2):
                 lb[k] = alpha_min
                 ub[k] = alpha_max
@@ -657,6 +680,8 @@ class GTOC13TourUDP:
 
     def _get_ctrls(self, x: np.ndarray, idx_pair: Tuple[int, int]) -> List[Tuple[float, float]]:
         lo, hi = idx_pair
+        if lo is None or hi is None:
+            return [(0.0, 0.0)] * self.leg_ctrl.nseg_leg
         raw = x[lo:hi]
         ctrls = []
         for k in range(0, len(raw), 2):
@@ -667,6 +692,8 @@ class GTOC13TourUDP:
 
     def _extract_ctrls_jax(self, x: jnp.ndarray, idx_pair: Tuple[int, int]) -> jnp.ndarray:
         lo, hi = idx_pair
+        if lo is None or hi is None:
+            return self._zero_ctrls_jax
         raw = x[lo:hi].reshape((self.leg_ctrl.nseg_leg, 2))
         alpha = jnp.clip(raw[:, 0], 1e-4, 0.5 * jnp.pi - 1e-4)
         sigma = raw[:, 1]
@@ -687,15 +714,21 @@ class GTOC13TourUDP:
             jnp.stack(vinf_dep_list) if vinf_dep_list else jnp.zeros((0, 3), dtype=jnp.float64)
         )
 
-        rb_vals = []
-        vb_vals = []
-        for idx, fn in enumerate(self._body_state_fns):
-            tj = t[idx]
-            rj, vj = fn(tj)
-            rb_vals.append(rj)
-            vb_vals.append(vj)
-        rb = jnp.stack(rb_vals)
-        vb = jnp.stack(vb_vals)
+        def _state_eval(elem, has_elem, r_fix, v_fix, tt):
+            return jax.lax.cond(
+                has_elem,
+                lambda _: keplerian_state(elem, self.mu, tt),
+                lambda _: (r_fix, v_fix),
+                operand=None,
+            )
+
+        rb, vb = jax.vmap(_state_eval)(
+            self._seq_elements,
+            self._seq_has_elements,
+            self._seq_fixed_r,
+            self._seq_fixed_v,
+            t,
+        )
 
         ceq_parts: List[jnp.ndarray] = []
         cineq_parts: List[jnp.ndarray] = []
@@ -891,6 +924,8 @@ def make_initial_guess(udp: GTOC13TourUDP, body_sequence: List[int], t_guess_s: 
     alpha0 = max(0.0, 0.5 * math.pi - (0.01 * DEG2RAD))
     for j in range(udp.M):
         lo, hi = udp.idx_ctrl[j]
+        if lo is None or hi is None:
+            continue
         raw = np.zeros(hi - lo)
         for k in range(0, len(raw), 2):
             raw[k] = alpha0
@@ -1094,9 +1129,10 @@ if __name__ == "__main__":  # pragma: no cover
     catalog = Catalog(mu_star_km3_s2=MU_STAR)
     sail = SailParams(a0_1au_km_s2=A0_1AU)
 
-    leg_ctrl = LegCtrlSpec(nseg_leg=8)
+    leg_ctrl = LegCtrlSpec(nseg_leg=1)
     popts = ProblemOptions(progress_every_evals=0, objective="vinf_rss", 
-                           optimize_t0=False, constrain_interstellar_direction=False, accel_smoothing=1e-10)
+                           optimize_t0=True, constrain_interstellar_direction=False, accel_smoothing=1e-10,
+                           use_solar_sail=False)
 
     # Build UDP + initial guess directly from a Lambert beam-search JSON
     #json_path = Path("results/beam/bs_medium_bw5000_d30_top5_20251101-202939Z.json")
@@ -1114,7 +1150,7 @@ if __name__ == "__main__":  # pragma: no cover
     )
 
     print(udp)
-    plot_solution_2d(udp, x0)
+    #plot_solution_2d(udp, x0)
 
     # Set integrator options on the propagator
     int_opts = IntOptions()
@@ -1122,28 +1158,31 @@ if __name__ == "__main__":  # pragma: no cover
 
     prob = pg.problem(udp)
     print(prob)
-
+    print("fitness at x0:", udp.fitness(x0))
+ 
     # Single-stage: IPOPT with adaptive settings
     pop = pg.population(prob, 0)
     pop.push_back(x0)
     if hasattr(pg, "ipopt"):
         ip = pg.ipopt()
         ip.set_string_option("mu_strategy", "adaptive")
-        ip.set_string_option("linear_solver", "mumps")
+        #ip.set_string_option("linear_solver", "mumps")
         ip.set_numeric_option("tol", 1e-6)
         ip.set_numeric_option("acceptable_tol", 1)
         #ip.set_numeric_option("barrier_tol_factor", 0.1)
         #ip.set_numeric_option("constr_viol_tol", 1e-5)
         #ip.set_numeric_option("dual_inf_tol", 1e-4)
         ip.set_numeric_option('acceptable_constr_viol_tol', 1e-6)
-        ip.set_numeric_option('acceptable_dual_inf_tol', 1e10)
-        ip.set_numeric_option('acceptable_compl_inf_tol', 1e10)
+        #ip.set_numeric_option('acceptable_dual_inf_tol', 1e10)
+        #ip.set_numeric_option('acceptable_compl_inf_tol', 1e10)
         #ip.set_string_option("mu_oracle", "loqo")
         ip.set_integer_option("max_iter", 1000)
-        ip.set_integer_option("print_level", 3)
-        ip.set_integer_option("acceptable_iter", 1)
+        ip.set_integer_option("print_level", 4)
+        ip.set_integer_option("acceptable_iter", 5)
         #ip.set_integer_option("mumps_mem_percent", 2000)
-        
+        #ip.set_string_option("nlp_scaling_method", "gradient-based")
+        #ip.set_numeric_option("obj_scaling_factor", 1.0)  # let Ipopt pick
+
         algo = pg.algorithm(ip)
         algo.set_verbosity(1)
         print(algo)

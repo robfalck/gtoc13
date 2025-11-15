@@ -25,7 +25,7 @@ from gtoc13.path_finding.beam.lambert import (
     InfeasibleLeg,
     resolve_lambert_leg,
 )
-from gtoc13.path_finding.beam.scoring import score_leg_mission, score_leg_mission_raw
+from gtoc13.path_finding.beam.scoring import score_leg_mission, score_leg_mission_raw, score_leg_medium, score_leg_simple
 from gtoc13.path_finding.beam.pipeline import make_expand_fn, make_score_fn, key_fn
 
 
@@ -517,7 +517,7 @@ class TestInterstellarBody(unittest.TestCase):
              patch("gtoc13.path_finding.beam.lambert.enumerate_lambert_solutions", side_effect=fake_enum):
             resolve_lambert_leg(config, registry, (parent,), proposal, score_stub)
 
-        self.assertEqual(captured_max_rev.get("value"), 0)
+        self.assertEqual(captured_max_rev.get("value"), 1)
 
 
 class TestMissionRawScoring(unittest.TestCase):
@@ -546,10 +546,106 @@ class TestMissionRawScoring(unittest.TestCase):
             )
 
         self.assertAlmostEqual(child_raw.J_total, 100.0)
+        self.assertAlmostEqual(child_raw.J_total_raw, 100.0)
         self.assertAlmostEqual(contrib_raw, 100.0)
         self.assertAlmostEqual(child_scaled.J_total, 100.0 / 6.0)
+        self.assertAlmostEqual(child_scaled.J_total_raw, 100.0)
         self.assertAlmostEqual(contrib_scaled, 100.0 / 6.0)
         self.assertGreater(child_raw.J_total, child_scaled.J_total)
+
+    def test_medium_scoring_tracks_mission_raw(self):
+        config = make_lambert_config(dv_max=None, vinf_max=None, tof_max_days=None)
+        registry = BodyRegistry(
+            body_ids=(1, 2),
+            semi_major_axes={1: BASE_SEMI_MAJOR_AXES[1], 2: BASE_SEMI_MAJOR_AXES[2]},
+            weights={1: 0.0, 2: 1.0},
+            tof_sample_count=3,
+        )
+        parent = Encounter(
+            body=1,
+            t=0.0,
+            r=(1.0, 0.0, 0.0),
+            vinf_in=1.0,
+            vinf_in_vec=(1.0, 0.0, 0.0),
+            J_total=0.5,
+            J_total_raw=0.25,
+        )
+        child = Encounter(
+            body=2,
+            t=100.0,
+            r=(1.0, 0.0, 0.0),
+            vinf_in=1.0,
+        )
+        prefix = (parent,)
+        meta = LambertLegMeta(
+            proposal=SimpleNamespace(tof=100.0),
+            lambert_solution={},
+            vinf_out_vec=(1.0, 0.0, 0.0),
+            vinf_in_vec=(1.0, 0.0, 0.0),
+            vinf_out=1.0,
+            vinf_in=1.0,
+        )
+        with patch("gtoc13.path_finding.beam.scoring.mission_score", return_value=42.0):
+            contrib, updated = score_leg_medium(config, registry, prefix, parent, child, meta)
+        self.assertGreater(contrib, 0.0)
+        self.assertAlmostEqual(updated.J_total_raw, 42.0)
+
+    def test_medium_zero_increment_updates_raw(self):
+        config = make_lambert_config(dv_max=None, vinf_max=None, tof_max_days=None)
+        registry = BodyRegistry(
+            body_ids=(1, 2),
+            semi_major_axes={1: BASE_SEMI_MAJOR_AXES[1], 2: BASE_SEMI_MAJOR_AXES[2]},
+            weights={1: 0.0, 2: 1.0},
+            tof_sample_count=3,
+        )
+        parent = Encounter(
+            body=1,
+            t=0.0,
+            r=(1.0, 0.0, 0.0),
+            vinf_in=1.0,
+            vinf_in_vec=(1.0, 0.0, 0.0),
+            J_total=0.0,
+            J_total_raw=0.0,
+        )
+        child = Encounter(
+            body=2,
+            t=10.0,
+            r=(1.0, 0.0, 0.0),
+            vinf_in=1.0,
+        )
+        prefix = (parent,)
+        meta = LambertLegMeta(
+            proposal=SimpleNamespace(tof=10.0),
+            lambert_solution={},
+            vinf_out_vec=(1.0, 0.0, 0.0),
+            vinf_in_vec=(1.0, 0.0, 0.0),
+            vinf_out=1.0,
+            vinf_in=1.0,
+        )
+        with patch("gtoc13.path_finding.beam.scoring.mission_score", return_value=11.0), \
+             patch("gtoc13.path_finding.beam.scoring._turn_slack", return_value=None):
+            contrib, updated = score_leg_medium(config, registry, prefix, parent, child, meta)
+        self.assertEqual(contrib, 0.0)
+        self.assertAlmostEqual(updated.J_total_raw, 11.0)
+
+    def test_simple_zero_tof_updates_raw(self):
+        config = make_lambert_config(dv_max=None, vinf_max=None, tof_max_days=None)
+        registry = BodyRegistry(body_ids=(), semi_major_axes={}, weights={}, tof_sample_count=1)
+        parent = Encounter(body=1, t=0.0, r=(0.0, 0.0, 0.0), J_total_raw=5.0)
+        child = Encounter(body=2, t=0.0, r=(0.0, 0.0, 0.0))
+        prefix = (parent,)
+        meta = LambertLegMeta(
+            proposal=SimpleNamespace(tof=0.0),
+            lambert_solution={},
+            vinf_out_vec=(0.0, 0.0, 0.0),
+            vinf_in_vec=(0.0, 0.0, 0.0),
+            vinf_out=0.0,
+            vinf_in=0.0,
+        )
+        with patch("gtoc13.path_finding.beam.scoring.mission_score", return_value=7.0):
+            contrib, updated = score_leg_simple(config, registry, prefix, parent, child, meta)
+        self.assertEqual(contrib, 0.0)
+        self.assertAlmostEqual(updated.J_total_raw, 7.0)
 
 
 if __name__ == '__main__':

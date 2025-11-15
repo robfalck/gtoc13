@@ -28,7 +28,7 @@ import numpy as np
 
 from gtoc13.bodies import bodies_data, INTERSTELLAR_BODY_ID
 from gtoc13.constants import DAY, YEAR, KMPAU
-from gtoc13.path_finding.beam.beam_search import BeamSearch
+from gtoc13.path_finding.beam.beam_search import BeamSearch, Node
 from gtoc13.path_finding.beam.config import (
     BODY_TYPES,
     BodyRegistry,
@@ -177,6 +177,13 @@ def run_cli() -> None:
         default=DEFAULT_SCORE_MODE,
         help="Scoring model: 'mission' uses compute_score with TOF scaling; 'mission-raw' skips the scaling; "
         "'simple' uses weight/TOF; 'depth' prioritizes unique, rapid legs for longer chains.",
+    )
+    parser.add_argument(
+        "--aux-score",
+        choices=("mission-raw", "none"),
+        default="mission-raw",
+        help="Auxiliary metric for global top-k retention. 'mission-raw' tracks the cumulative mission score "
+        "regardless of heuristic; 'none' disables aux scoring.",
     )
     parser.add_argument(
         "--body-types",
@@ -363,6 +370,7 @@ def run_cli() -> None:
             dv_periapsis=None,
             dv_periapsis_vec=None,
             J_total=0.0,
+            J_total_raw=0.0,
         ),
     )
 
@@ -404,6 +412,18 @@ def run_cli() -> None:
     )
     selected_score_fn = make_score_fn(config, registry, args.score_mode)
 
+    def mission_raw_from_state(state: State) -> float:
+        if not state:
+            return float("-inf")
+        last = state[-1]
+        val = getattr(last, "J_total_raw", None)
+        if val is None:
+            return float("-inf")
+        return float(val)
+
+    aux_score_mode = args.aux_score
+    aux_score_fn = mission_raw_from_state if aux_score_mode == "mission-raw" else None
+
     beam = BeamSearch(
         expand_fn=expand,
         score_fn=selected_score_fn,
@@ -415,6 +435,7 @@ def run_cli() -> None:
         parallel_backend=None if args.parallel == "none" else args.parallel,
         progress_fn=progress_logger,
         return_top_k=max(args.beam_width, args.top_k),
+        aux_score_fn=aux_score_fn,
     )
 
     final_nodes = beam.run(root_state)
@@ -422,7 +443,13 @@ def run_cli() -> None:
         print("Beam search terminated without feasible nodes.")
         return
 
-    final_nodes.sort(key=lambda n: n.cum_score, reverse=True)
+    def _node_mission_raw_score(node: Node) -> float:
+        return mission_raw_from_state(node.state)
+
+    if aux_score_fn is not None:
+        final_nodes.sort(key=lambda n: (_node_mission_raw_score(n), n.cum_score), reverse=True)
+    else:
+        final_nodes.sort(key=lambda n: n.cum_score, reverse=True)
     top = final_nodes[: args.top_k]
 
     # Collect full solution records for optional JSON export.
@@ -435,7 +462,14 @@ def run_cli() -> None:
     for rank, node in enumerate(top, start=1):
         path_state: State = node.state
         path_depth = len(path_state)
-        print(f"\n#{rank}: score={node.cum_score:.4f} depth={path_depth} node_id={node.id}")
+        raw_score = _node_mission_raw_score(node) if aux_score_fn is not None else None
+        if aux_score_fn is not None:
+            print(
+                f"\n#{rank}: mission_raw={raw_score:.4f} beam_score={node.cum_score:.4f} "
+                f"depth={path_depth} node_id={node.id}"
+            )
+        else:
+            print(f"\n#{rank}: beam_score={node.cum_score:.4f} depth={path_depth} node_id={node.id}")
         if not path_state:
             print("    <empty path>")
             continue
@@ -455,17 +489,18 @@ def run_cli() -> None:
         print(f"    Total periapsis Δv along path: {dv_sum:.3f} km/s")
 
         total_tof = path_state[-1].t - mission_start if path_state else 0.0
-        solutions_payload.append(
-            {
-                "rank": rank,
-                "node_id": node.id,
-                "score": node.cum_score,
-                "depth": path_depth,
-                "total_tof_days": total_tof,
-                "total_periapsis_dv_km_s": dv_sum,
-                "encounters": encounters_payload,
-            }
-        )
+        solution_record = {
+            "rank": rank,
+            "node_id": node.id,
+            "score": node.cum_score,
+            "depth": path_depth,
+            "total_tof_days": total_tof,
+            "total_periapsis_dv_km_s": dv_sum,
+            "encounters": encounters_payload,
+        }
+        if aux_score_fn is not None:
+            solution_record["mission_raw_score"] = raw_score
+        solutions_payload.append(solution_record)
 
     if output_path is not None and solutions_payload:
         io_utils.write_results(
@@ -481,6 +516,7 @@ def run_cli() -> None:
             body_types=normalized_types,
             top_k=args.top_k,
             top_nodes=solutions_payload,
+            aux_score_mode=aux_score_mode,
             resume_source=resume_source,
             resume_rank=resume_rank_val,
             resume_index=resume_index_val,
@@ -491,4 +527,9 @@ def run_cli() -> None:
 
 
 if __name__ == '__main__':
+    import multiprocessing as mp
+
+    # Force 'spawn' so process workers start clean (important on Linux)
+    mp.set_start_method("spawn", force=True)
+
     run_cli()
