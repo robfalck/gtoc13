@@ -527,4 +527,9 @@ def run_cli() -> None:
 
 
 if __name__ == '__main__':
+    import multiprocessing as mp
+
+    # Force 'spawn' so process workers start clean (important on Linux)
+    mp.set_start_method("spawn", force=True)
+
     run_cli()
