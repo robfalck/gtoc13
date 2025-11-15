@@ -178,9 +178,9 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
 
     # # Times between flyby events
-    prob.model.add_design_var('dt', lower=0.0, upper=200, ref=10.0, units='gtoc_year')
+    prob.model.add_design_var('dt', lower=0.001, upper=200, ref=10.0, units='gtoc_year')
 
-    # # Outgoing inertial velocity after last flyby
+    # # Outgoing inertial velocity after last flybyo
     prob.model.add_design_var('v_end', units='DU/TU')
 
     # #
@@ -202,6 +202,9 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
         prob.model.add_constraint('flyby_comp.h_p_norm',
                                 indices=planet_flyby_idxs,
                                 lower=0.1, upper=100.0)
+        # prob.model.add_constraint('flyby_comp.h_p_defect',
+        #                           indices=planet_flyby_idxs,
+        #                           upper=0.0, ref=1000.0)
 
     # # Make sure the final time is in the allowable span.
     if obj.lower() != 't':
@@ -254,7 +257,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
 
     return prob
 
-def create_solution(prob, bodies, controls=None, filename=None, single_arc=False):
+def create_solution(prob, bodies, controls=None, filename=None, single_arc=False, save_sol=True):
     N = len(bodies)
 
     num_arcs = 1 if single_arc else N
@@ -328,6 +331,9 @@ def create_solution(prob, bodies, controls=None, filename=None, single_arc=False
     solution = GTOC13Solution(arcs=arcs,
                               comments=[],
                               objective_J=J)
+
+    if not save_sol:
+        return solution, None
 
     # Find the next available solution filename
     solutions_dir = Path(__file__).parent.parent.parent / 'solutions'
@@ -453,7 +459,7 @@ def solve_all_arcs(args):
         # prob.check_partials(method='fd', compact_print=True, form='central', includes='*miss_distance_comp*')
     elif args.mode == 'opt':
         result = prob.run_driver()
-        save = result.success
+        # save = result.success
     elif args.mode.startswith('feas'):
         prob.find_feasible(iprint=2, method='trf')
 

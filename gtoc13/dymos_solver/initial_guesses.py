@@ -153,7 +153,7 @@ def _guess_linear(phase, from_body, to_body, t1, t2, control):
     if from_body == -1:
         r1 = np.array([-200 * KMPDU, r2[1], r2[2]])
     else:
-        r1 = bodies_data[to_body].get_state(t1).r
+        r1 = bodies_data[from_body].get_state(t1).r
 
     dt_arc_s = t2 - t1
     r_km = phase.interp('r', [r1, r2])
@@ -226,7 +226,7 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
     if from_body == -1:
         r1 = np.array([-200 * KMPDU, r2[1], r2[2]])
     else:
-        r1 = bodies_data[to_body].get_state(t1).r
+        r1 = bodies_data[from_body].get_state(t1).r
 
     dt_arc_s = t2 - t1
 
