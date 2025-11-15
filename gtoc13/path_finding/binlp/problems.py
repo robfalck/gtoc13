@@ -21,14 +21,21 @@ from gtoc13.path_finding.binlp.solver_outputs import generate_iterative_solution
 
 
 @timer
-def run_basic_problem(index_params: IndexParams, discrete_data: dict, solver_params: SolverParams):
+def run_basic_problem(
+    index_params: IndexParams,
+    discrete_data: dict,
+    solver_params: SolverParams,
+    simple: bool = True,
+    grand_tour: bool = False,
+):
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")
     segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
     x_vars_and_constrs(segment_model)
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
-    grand_tour_vars_and_constrs(segment_model, index_params.bodies_ID)
-    objective_fnc(segment_model)
+    if grand_tour:
+        grand_tour_vars_and_constrs(segment_model, index_params.bodies_ID)
+    objective_fnc(segment_model, simple)
     print("...total segment setup time...")
 
     if index_params.first_arcs:
@@ -49,6 +56,8 @@ def run_trajectory_problem(
     discrete_data: dict,
     solver_params: SolverParams,
     arc_table: ArcTable,
+    simple: bool = True,
+    grand_tour: bool = False,
 ):
     print(">>>>> WRITE PYOMO MODEL >>>>>\n")
     segment_model = initialize_model(index_params=index_params, discrete_data=discrete_data)
@@ -56,8 +65,9 @@ def run_trajectory_problem(
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
     vinfs_pen = traj_arcs_vars_and_constrs(segment_model, arc_table)
-    grand_tour_vars_and_constrs(segment_model, index_params.bodies_ID)
-    objective_fnc(segment_model, vinfs_pen)
+    if grand_tour:
+        grand_tour_vars_and_constrs(segment_model, index_params.bodies_ID)
+    objective_fnc(segment_model, vinfs_pen, simple)
     print("...total segment setup time...")
 
     if index_params.first_arcs:
@@ -80,6 +90,8 @@ def run_segment_problem(
     arc_table: ArcTable | None = None,
     sequence: list[SequenceTarget] | None = None,
     flyby_history: dict[int : list[ndarray]] | None = None,
+    simple: bool = True,
+    grand_tour: bool = False,
 ):
     """
     - initialize the model with trajectory problem + extra?
@@ -96,8 +108,9 @@ def run_segment_problem(
     y_vars_and_constrs(segment_model)
     z_vars_and_constrs(segment_model)
     vinfs_pen = traj_arcs_vars_and_constrs(segment_model, arc_table)
-    grand_tour_vars_and_constrs(segment_model, index_params.bodies_ID)
-    objective_fnc(segment_model, vinfs_pen)
+    if grand_tour:
+        grand_tour_vars_and_constrs(segment_model, index_params.bodies_ID)
+    objective_fnc(segment_model, vinfs_pen, simple)
     print("...total segment setup time...")
 
     if index_params.first_arcs:

@@ -183,6 +183,40 @@ def x_vars_and_constrs(seq_model: pyo.ConcreteModel):
 
     seq_model.monotonic_time = pyo.Constraint(seq_model.H, rule=monotime_rule)
 
+    # print("...create x_ki* successive flyby constraints...")
+    def nodupes_rule(model, k, h):
+        if h > 1:
+            term = pyo.quicksum(model.x_kih[k, :, h]) + pyo.quicksum(model.x_kih[k, :, h - 1]) <= 1
+
+        else:
+            term = pyo.Constraint.Skip
+        return term
+
+    seq_model.no_dupes = pyo.Constraint(seq_model.K * seq_model.H, rule=nodupes_rule)
+    # # for each h, the time must be greater than the previous h
+    # def successive_flyby_rule(model, k, h):
+    #     if h > 1:
+    #         term = (
+    #             pyo.quicksum(
+    #                 model.tu_ki[k, i] * model.x_kih[k, i, h]
+    #                 - model.tu_ki[k, i] * model.x_kih[k, i, h - 1]
+    #                 for i in model.I
+    #             )
+    #             + (model.period_k[k] / 3)
+    #             * (
+    #                 2
+    #                 - pyo.quicksum(model.x_kih[k, i, h] + model.x_kih[k, i, h - 1] for i in model.I)
+    #             )
+    #             >= model.period_k[k] / 3
+    #         )
+    #     else:
+    #         term = pyo.Constraint.Skip
+    #     return term
+
+    # seq_model.successive_flyby = pyo.Constraint(
+    #     seq_model.K * seq_model.H, rule=successive_flyby_rule
+    # )
+
 
 ################################################################################################################
 
@@ -213,29 +247,18 @@ def y_vars_and_constrs(seq_model: pyo.ConcreteModel):
         rule=lambda model, k: pyo.quicksum(model.y_kij[k, ...]) <= factorial(model.Nk_limit - 1),
     )
 
-    print("...create y_k** lower bound constraints...")
-    seq_model.y_k_lower = pyo.Constraint(
-        seq_model.K,
-        rule=lambda model, k: pyo.quicksum(model.y_kij[k, ...]) + 1
-        >= pyo.quicksum(model.x_kih[k, ...]),
-    )
-
-    print("...create y_kij big-M constraints...")
-    # if there is both x_ki* and x_kj*, then there must be a y_kij
-    seq_model.y_bigm1_x = pyo.Constraint(
+    print("...create y_kij with x_ki* and x_kj* implication constraints...")
+    seq_model.y_and_x = pyo.Constraint(
         seq_model.KIJ,
         rule=lambda model, k, i, j: pyo.quicksum(
             model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H
         )
-        <= 10 * model.y_kij[k, i, j] + 1,
+        <= 1 + model.y_kij[k, i, j],
     )
-    # if there isn't both x_ki* and x_kj*, then there cannot be a y_kij
-    seq_model.y_bigm2_x = pyo.Constraint(
+    seq_model.y_implies_x = pyo.Constraint(
         seq_model.KIJ,
-        rule=lambda model, k, i, j: pyo.quicksum(
-            model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H
-        )
-        >= 2 - 10 * (1 - model.y_kij[k, i, j]),
+        rule=lambda model, k, i, j: 2 * model.y_kij[k, i, j]
+        <= pyo.quicksum(model.x_kih[k, i, h] + model.x_kih[k, j, h] for h in model.H),
     )
 
 
@@ -290,6 +313,7 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
         rule=lambda model, k: model.H.at(-1) * pyo.quicksum(model.z_ki[k, :])
         >= pyo.quicksum(model.x_kih[k, ...]),
     )
+
     # if there are previous flybys at time i, i cannot be a first flyby
     seq_model.z_implies_not_y = pyo.Constraint(
         seq_model.KI,
@@ -299,6 +323,14 @@ def z_vars_and_constrs(seq_model: pyo.ConcreteModel):
             else pyo.Constraint.Feasible
         ),
     )
+
+    # def z_no_prev_fb_rule(model, k, i):
+    #     return (
+    #         pyo.quicksum(model.x_kih[k, it, h] for it in range(1, i + 1) for h in model.H)
+    #         <= model.H.at(-1) * (1 - model.z_ki[k, i]) + 1
+    #     )
+
+    # seq_model.z_implies_no_prev = pyo.Constraint(seq_model.KI, rule=z_no_prev_fb_rule)
 
 
 #############################################################################################################
@@ -564,38 +596,56 @@ def traj_arcs_vars_and_constrs(seq_model: pyo.ConcreteModel, arc_table: ArcTable
 
 
 @timer
-def objective_fnc(seq_model: pyo.ConcreteModel, vinf_penalty: dict = None):
-    def obj_rule(model):
-        ##### Objective Function and Scoring #####
-        print("...create (z_ki, y_kij, k_kih) -> S(r_kij) seasonal penalty terms...")
-        flyby_ki = {ki: model.z_ki[ki] for ki in model.KI}
+def objective_fnc(seq_model: pyo.ConcreteModel, vinf_penalty: dict = None, simple: bool = True):
+    if simple:
+        seq_model.dummy_score = pyo.Objective(
+            rule=pyo.quicksum(
+                seq_model.x_kih[k, i, h] * seq_model.w_k[k]
+                for k in seq_model.K
+                for i in seq_model.I
+                for h in seq_model.H
+            ),
+            sense=pyo.maximize,
+        )
+    else:
 
-        # subsequent flybys
-        lin_term = 0
-        for k, i, j in model.KIJ:
-            lin_term += (
-                lin_dots_penalty(model.rdu_ki[k, i], model.rdu_ki[k, j]) * model.y_kij[k, i, j]
+        def obj_rule(model):
+            ##### Objective Function and Scoring #####
+            print("...create (z_ki, y_kij, k_kih) -> S(r_kij) seasonal penalty terms...")
+            flyby_ki = {ki: model.z_ki[ki] for ki in model.KI}
+
+            # subsequent flybys
+            lin_term = 0
+            for k, i, j in model.KIJ:
+                lin_term += (
+                    lin_dots_penalty(model.rdu_ki[k, i], model.rdu_ki[k, j]) * model.y_kij[k, i, j]
+                )
+                # lin_term += model.seasons_kij[k, i, j] * model.y_kij[k, i, j]
+                if j == i - 1:
+                    flyby_ki[k, i] = lin_term
+                    lin_term = 0
+
+            if model.find_component("grand_tour"):
+                GT_bonus = 1.0 + 0.3 * model.grand_tour
+            elif model.find_component("all_planets"):
+                GT_bonus = 50 * model.all_planets
+            else:
+                GT_bonus = 0
+            if model.find_component("Lp_kimj"):
+                dv_penalty = vinf_penalty
+            else:
+                dv_penalty = {ki: 1 for ki in model.KI}
+            # return GT_bonus * pyo.quicksum(
+            #     model.w_k[k] * flyby_ki[ki] * dv_penalty[ki] for ki in model.KI
+            # )  # + dv_penalty
+            return GT_bonus + pyo.quicksum(
+                model.w_k[k] * flyby_ki[ki] * dv_penalty[ki] for ki in model.KI
             )
-            if j == i - 1:
-                flyby_ki[k, i] = lin_term
-                lin_term = 0
 
-        if model.find_component("grand_tour"):
-            GT_bonus = 1.0 + 0.3 * model.grand_tour
-        else:
-            GT_bonus = 1.0 + 0.3 * model.all_planets
-        if model.find_component("Lp_kimj"):
-            dv_penalty = vinf_penalty
-        else:
-            dv_penalty = {ki: 1 for ki in model.KI}
-        return GT_bonus * pyo.quicksum(
-            model.w_k[k] * flyby_ki[ki] * dv_penalty[ki] for ki in model.KI
-        )  # + dv_penalty
-
-    seq_model.maximize_score = pyo.Objective(
-        rule=obj_rule,
-        sense=pyo.maximize,
-    )
+        seq_model.maximize_score = pyo.Objective(
+            rule=obj_rule,
+            sense=pyo.maximize,
+        )
 
 
 ##########################################################################################################

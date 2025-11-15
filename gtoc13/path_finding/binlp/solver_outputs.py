@@ -119,8 +119,10 @@ def process_flybys(
         for (k, i, j), v in model.y_kij.items():
             if pyo.value(v) > 0.5:
                 if i_prev != i:
-                    flyby_history[k].append(model.rdu_ki[k, i])
+                    flyby_history[k] = model.rdu_ki[k, i]
                     i_prev = i
+                else:
+                    flyby_history[k].append(model.rdu_ki[k, i])
                 print((k, i, j))
     print("\n")
     return flyby_history
