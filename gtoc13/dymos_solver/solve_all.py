@@ -415,7 +415,15 @@ def solve_all_arcs(args):
                         f"Must be one of: {', '.join(sorted(valid_controls))}", file=sys.stderr)
                 sys.exit(1)
 
-    if not (isinstance(args.num_nodes, int) or len(args.bodies)):
+    if isinstance(args.num_nodes, int):
+        num_nodes = N * [args.num_nodes]
+    else:
+        if len(args.num_nodes) == 1:
+            num_nodes = N * [args.num_nodes[0]]
+        else:
+            num_nodes = args.num_nodes
+
+    if len(num_nodes) != len(bodies):
         print(f"Error: Number of nodes in each arc must be a scalar or must match the number of flyby bodies. ({len(args.bodies)})",
               file=sys.stderr)
         sys.exit(1)
@@ -426,11 +434,6 @@ def solve_all_arcs(args):
         controls = N * [args.controls[0]]
     else:
         controls = args.controls
-
-    if isinstance(args.num_nodes, int):
-        num_nodes = N * [args.num_nodes]
-    else:
-        num_nodes = args.num_nodes
 
     prob = get_dymos_serial_solver_problem(bodies=bodies,
                                            num_nodes=num_nodes,
