@@ -42,7 +42,7 @@ def main():
         solutions_dir = this_dir
 
         filename = f'{i}_{from_body}_{to_body}.txt'
-        solution_file = solutions_dir / f'{filename}.txt'
+        solution_file = solutions_dir / filename
 
         sol_i.write_to_file(solution_file, precision=11)
         print(f"Solution written to {solution_file}")
