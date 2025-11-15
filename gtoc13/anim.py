@@ -136,13 +136,13 @@ def load_solution_trajectory(filepath: str) -> dict:
 
     max_time = max(pt['epoch'] for pt in state_points) if state_points else 0.0
 
-    # Propagate final state for 100 years after last flyby
+    # Propagate final state after last flyby
     propagated_positions = None
     propagated_times = None
     if state_points:
         final_state = state_points[-1]
-        print(f"Propagating final state for 100 years from t={max_time/YEAR:.2f} years...")
-        propagated_positions, propagated_times = propagate_final_state(final_state, duration_years=100.0)
+        print(f"Propagating final state from t={max_time/YEAR:.2f} years...")
+        propagated_positions, propagated_times = propagate_final_state(final_state, duration_years=20.0)
         # Adjust times to be relative to mission start
         propagated_times = propagated_times + max_time
         print(f"Propagation complete. Final propagated time: t={propagated_times[-1]/YEAR:.2f} years")

@@ -260,7 +260,7 @@ def flyby_defects_in_out(
     v_body: jnp.ndarray,
     mu_body: float,
     r_body: float
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float, float, float, float, jnp.ndarray]:
     """
     Compute parameters which determine whether a flyby is valid.
 
@@ -284,7 +284,7 @@ def flyby_defects_in_out(
         r_body: radius of the body (km)
 
     Returns:
-        (v_inf_in, v_inf_out, v_inf_mag_defect, h_p_norm, delta, dv)
+        (v_inf_in, v_inf_out, v_inf_mag_defect, h_p_norm, h_p_defect, delta, dv)
     """
     v_inf_in = v_in - v_body
     v_inf_out = v_out - v_body
@@ -310,25 +310,25 @@ def flyby_defects_in_out(
     rp = (mu_body / (v_inf_in_mag**2)) * (1.0 / sin_half_delta - 1.0)
     h_p_norm = (rp - r_body) / r_body
 
-    # # Compute altitude constraint defect (parabolic response)
-    # # h_p_defect < 0 means altitude is valid (between 0.1 and 100 radii)
-    # # h_p_defect = 0 at the boundaries (h_p_norm = 0.1 or 100)
-    # # h_p_defect > 0 means altitude violates constraints (< 0.1 or > 100 radii)
-    # #
-    # # Parabolic form that opens upward:
-    # # When h_lower < h_p_norm < h_upper:
-    # #   - (h_p_norm - h_lower) > 0
-    # #   - (h_p_norm - h_upper) < 0
-    # #   - Product is negative (satisfied constraint)
-    # # When h_p_norm < h_lower OR h_p_norm > h_upper:
-    # #   - Both factors have same sign
-    # #   - Product is positive (violated constraint)
-    # h_lower = 0.1
-    # h_upper = 100.0
+    # Compute altitude constraint defect (parabolic response)
+    # h_p_defect < 0 means altitude is valid (between 0.1 and 100 radii)
+    # h_p_defect = 0 at the boundaries (h_p_norm = 0.1 or 100)
+    # h_p_defect > 0 means altitude violates constraints (< 0.1 or > 100 radii)
+    #
+    # Parabolic form that opens upward:
+    # When h_lower < h_p_norm < h_upper:
+    #   - (h_p_norm - h_lower) > 0
+    #   - (h_p_norm - h_upper) < 0
+    #   - Product is negative (satisfied constraint)
+    # When h_p_norm < h_lower OR h_p_norm > h_upper:
+    #   - Both factors have same sign
+    #   - Product is positive (violated constraint)
+    h_lower = 0.1
+    h_upper = 100.0
 
-    # h_p_defect = (h_p_norm - h_lower) * (h_p_norm - h_upper)
+    h_p_defect = (h_p_norm - h_lower) * (h_p_norm - h_upper)
 
-    return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_norm, delta, dv
+    return v_inf_in, v_inf_out, v_inf_mag_defect, h_p_norm, h_p_defect, delta, dv
 
 
 @jit

@@ -140,13 +140,12 @@ class EphemCompNoStartPlane(om.JaxExplicitComponent):
     def setup(self):
         N = len(self.options['bodies'])
         self.add_input('t0', shape=(1,), val=0.0, units='gtoc_year', desc='Initial time')
-        self.add_input('dt', shape=(N,), units='gtoc_year', desc='Transfer time for each event.')
+        self.add_input('dt', shape=(1,), units='gtoc_year', desc='Transfer time for each event.')
 
         self.add_output('body_pos', shape=(N, 3), units='km', desc='Positions at the starting time and each body intercept.')
         self.add_output('body_vel', shape=(N, 3), units='km/s', desc='Intertial velocity of each body at intercept (km/s)')
-        self.add_output('dt_dtau', shape=(N,), units='gtoc_year', desc='Time span vs tau for each arc.')
-        self.add_output('times', shape=(N + 1,), units='gtoc_year', desc='Times of events')
-        self.add_output('dt_out', shape=(N,), units='gtoc_year', desc='dt echoed as an output to be connected downstream.')
+        self.add_output('times', shape=(N,), units='gtoc_year', desc='Times of events')
+        self.add_output('dt_out', shape=(1,), units='gtoc_year', desc='dt echoed as an output to be connected downstream.')
 
         self._ELEMENTS = jnp.zeros((N, 6))
 
@@ -191,21 +190,17 @@ class EphemCompNoStartPlane(om.JaxExplicitComponent):
 
         # Compute event times: t0, t0+dt[0], t0+dt[0]+dt[1], ...
         # Note: times are in gtoc_year units (as specified in the input declaration)
-        times = jnp.concatenate((t0, t0 + jnp.cumsum(dt)))
+        times = jnp.concatenate((t0, t0 + dt))
 
         # Convert times from gtoc_year to seconds for elements_to_pos_vel
         # Since gtoc_year is defined as YEAR * s, and our inputs have units='gtoc_year',
         # the values in compute_primal are the numeric values in gtoc_year units.
         # But elements_to_pos_vel expects seconds, so we multiply by YEAR.
-        times_seconds = YEAR * times[1:]
+        times_s = YEAR * times
 
         # Using MU in km**3/s**2, make sure to pass times in seconds, not years.
-        body_pos, body_vel = elements_to_pos_vel(ELEMENTS, times_seconds, self._MU)
-
-        event_pos = body_pos
-
-        dt_dtau = dt / 2.0
+        body_pos, body_vel = elements_to_pos_vel(ELEMENTS, times_s, self._MU)
 
         dt_out = dt
 
-        return body_pos, body_vel, dt_dtau, times, dt_out
+        return body_pos, body_vel, times, dt_out

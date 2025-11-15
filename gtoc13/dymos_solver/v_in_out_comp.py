@@ -89,7 +89,7 @@ class SingleArcVInOutComp(om.ExplicitComponent):
         self.add_output('flyby_v_in', shape=(2, 3), units='km/s')
         self.add_output('flyby_v_out', shape=(2, 3), units='km/s')
 
-    def declare_partials(self):
+    def setup_partials(self):
         # flyby_v_in[0, :] = v_in_prev_flyby[0, :]
         # Maps indices 0-2 of output to indices 0-2 of input
         self.declare_partials('flyby_v_in', 'v_in_prev_flyby',
