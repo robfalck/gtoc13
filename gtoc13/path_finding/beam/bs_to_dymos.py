@@ -9,6 +9,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from gtoc13.solution import GTOC13Solution
 from gtoc13.constants import DAY, YEAR
 from gtoc13.dymos_solver.dymos_solver import (
     get_dymos_serial_solver_problem,
@@ -112,6 +113,8 @@ def run_from_json(
     objective: str,
     max_time: float,
     save_name: str | None,
+    mode: str,
+    load_paths: Sequence[Path] | None,
 ) -> None:
     payload = _load_payload(json_path)
     solution = _pick_solution(payload, rank)
@@ -147,17 +150,22 @@ def run_from_json(
     resolved_controls = _resolve_controls(len(trimmed), controls)
 
     t0_years = _days_to_gtoc_years(float(start_epoch_days))
-    t0_override = t0_years if has_interstellar_start else None
+    t0_override = t0_years
 
     print(
         f"Running Dymos solver for {len(trimmed)} bodies from {json_path.name} "
-        f"(rank {rank}, num_nodes={num_nodes}, objective={objective}, t_max={max_time}).",
+        f"(rank {rank}, num_nodes={num_nodes}, objective={objective}, t_max={max_time}, mode={mode}).",
     )
     bodies_str = " ".join(str(b) for b in trimmed)
     flyby_str = " ".join(f"{val:.6f}" for val in trimmed_epochs)
     node_str = " ".join(str(num_nodes) for _ in trimmed)
     control_opts = "" if all(ctrl == 0 for ctrl in resolved_controls) else \
         " --controls " + " ".join(str(c) for c in resolved_controls)
+    load_opt = ""
+    primary_load = None
+    if load_paths:
+        primary_load = load_paths[0]
+        load_opt = f" --load {primary_load}"
     cli_parts = [
         "Equivalent CLI:\n"
         f"  python -m gtoc13.dymos_solver "
@@ -166,7 +174,8 @@ def run_from_json(
     if t0_override is not None:
         cli_parts.append(f"--t0 {t0_override:.6f} ")
     cli_parts.append(
-        f"--num-nodes {node_str} --max-time {max_time:.3f} --obj {objective}{control_opts}"
+        f"--num-nodes {node_str} --max-time {max_time:.3f} --obj {objective}"
+        f" --mode {mode}{control_opts}{load_opt}"
     )
     print("".join(cli_parts))
     if not solve:
@@ -182,6 +191,8 @@ def run_from_json(
         objective=objective,
         max_time=max_time,
         save_name=save_name,
+        mode=mode,
+        load_path=primary_load,
     )
 
 
@@ -195,6 +206,8 @@ def _run_serial_solver(
     objective: str,
     max_time: float,
     save_name: str | None,
+    mode: str,
+    load_path: Path | None,
 ) -> None:
     num_node_list = [num_nodes] * len(bodies)
 
@@ -209,16 +222,30 @@ def _run_serial_solver(
     )
     prob.setup()
 
+    guess_solution = None
+    if load_path is not None:
+        if not load_path.is_file():
+            raise FileNotFoundError(f"Dymos solution file not found: {load_path}")
+        guess_solution = GTOC13Solution.load(load_path)
+
     set_initial_guesses(
         prob,
         bodies=bodies,
         flyby_times=np.asarray(flyby_times, dtype=float),
         t0=t0_years if t0_years is not None else 0.0,
         controls=controls,
+        guess_solution=guess_solution,
     )
 
-    result = prob.run_driver()
-    success = getattr(result, "success", bool(result))
+    if mode == "run":
+        prob.run_model()
+        success = True
+    elif mode == "feas":
+        result = prob.find_feasible(iprint=2)
+        success = bool(result) if result is not None else True
+    else:
+        result = prob.run_driver()
+        success = getattr(result, "success", bool(result))
     if success:
         create_solution(prob, bodies, controls=controls, filename=save_name)
 
@@ -269,6 +296,19 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional basename for the saved Dymos solution (otherwise auto-incremented).",
     )
     parser.add_argument(
+        "--mode",
+        choices=("opt", "run", "feas"),
+        default="opt",
+        help="Execution mode for the Dymos solver (opt: optimize, run: forward simulate, feas: feasible search).",
+    )
+    parser.add_argument(
+        "--load",
+        nargs="+",
+        type=Path,
+        default=None,
+        help="Optional path(s) to Dymos solution files to warm-start the solver (first file is used).",
+    )
+    parser.add_argument(
         "--solve",
         action="store_true",
         help="Actually run the Dymos solver; otherwise only print the CLI command.",
@@ -287,6 +327,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         objective=args.objective,
         max_time=args.max_time,
         save_name=args.save_name,
+        mode=args.mode,
+        load_paths=args.load,
     )
 
 

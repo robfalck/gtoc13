@@ -40,6 +40,7 @@ class Encounter:
     dv_periapsis_vec: Optional[Vec3] = None  # periapsis impulse vector (km/s)
     dv_limit: Optional[float] = None  # pruning cap applied for this leg (km/s)
     J_total: float = 0.0  # cumulative score up to/including this encounter
+    J_total_raw: float = 0.0  # cumulative mission-raw score (always tracked)
     seed_offset: Optional[Tuple[float, float]] = None  # (dy, dz) in AU for Interstellar fan-out
 
 
@@ -388,7 +389,7 @@ def resolve_lambert_leg(
     proposal: Any,
     score_fn: ScoreFn,
     *,
-    max_revs: int = 0,
+    max_revs: int = 1,
 ) -> Tuple[float, State]:
     """
     Solve a Lambert leg for the given proposal, evaluate each branch, and return
@@ -413,7 +414,7 @@ def resolve_lambert_leg(
 
     local_max_revs = max_revs
     if parent.body == INTERSTELLAR_BODY_ID and parent.seed_offset is not None:
-        local_max_revs = 0
+        local_max_revs = 1
 
     solutions = enumerate_lambert_solutions(
         parent.body,

@@ -99,7 +99,7 @@ def make_expand_fn(
                 period_days = None
             if period_days is not None and period_days > 0.0:
                 # Minimum step of 0.5 deg of mean motion (clipped to avoid zero step).
-                min_step = max(period_days / 720.0, 1e-6)
+                min_step = max(period_days / 7200000000.0, 1e-6)  # made this really small since I don't want to limit it and I don't want to change the code
                 degree_count = int(math.floor(span / min_step)) + 1
                 if degree_count >= 2:
                     # Do not exceed the configured grid size, but shrink it when the degree
@@ -265,6 +265,7 @@ def key_fn(state: State) -> Hashable:
         vinf_bin = 7
     visited_bodies = tuple(sorted({enc.body for enc in state}))
     tail_bodies = tuple(enc.body for enc in state[-3:])
+    #seq_key = tuple(enc.body for enc in state)
     # Key combines: current body, set of visited bodies (orderless), last three bodies
     # in order, 5-degree TOF bucket, fixed-width v∞ bucket, and the bin width used.
     return (last.body, visited_bodies, tail_bodies, tof_key, vinf_bin, len(state))

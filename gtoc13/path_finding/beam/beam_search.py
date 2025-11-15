@@ -31,6 +31,7 @@ class Node:
     state: Any
     depth: int
     cum_score: float  # higher is better
+    aux_score: float = 0.0  # optional secondary metric (e.g., mission-raw)
 
 
 class BeamSearch:
@@ -105,6 +106,7 @@ class BeamSearch:
         score_chunksize: int = 256,                   # batch size for scoring tasks
         progress_fn: Optional[Callable[[int, int, int, float, float], None]] = None,
         return_top_k: Optional[int] = None,
+        aux_score_fn: Optional[Callable[[Any], float]] = None,
     ) -> None:
         self.expand_fn = expand_fn
         self.score_fn = score_fn
@@ -119,6 +121,7 @@ class BeamSearch:
         self._return_top_k = (
             int(return_top_k) if (return_top_k is not None and return_top_k > 0) else self.beam_width
         )
+        self._aux_score_fn = aux_score_fn
 
         # Internals
         self._next_id = 0
@@ -217,14 +220,25 @@ class BeamSearch:
         """Allocate and record a node."""
         nid = self._next_id
         self._next_id += 1
-        node = Node(id=nid, parent_id=parent_id, state=state, depth=depth, cum_score=float(cum_score))
+        aux = 0.0
+        if self._aux_score_fn is not None:
+            try:
+                aux = float(self._aux_score_fn(state))
+            except Exception:
+                aux = float("-inf")
+        node = Node(id=nid, parent_id=parent_id, state=state, depth=depth, cum_score=float(cum_score), aux_score=aux)
         self._nodes[nid] = node
         return node
 
     @staticmethod
     def _rank_key(n: Node) -> tuple[float, int]:
-        """Key used to rank nodes: score desc, then id asc (deterministic)."""
+        """Key used to rank nodes for per-depth pruning: score desc, then id asc."""
         return (n.cum_score, -n.id)
+
+    @staticmethod
+    def _global_rank_key(n: Node) -> tuple[float, float, int]:
+        """Key used to rank nodes for global retention: aux desc, score desc, id asc."""
+        return (n.aux_score, n.cum_score, -n.id)
 
     def _top_k(self, nodes: Sequence[Node], k: int) -> List[Node]:
         """Return best-first list of up to k nodes (O(n) selection + small sort)."""
@@ -248,19 +262,21 @@ class BeamSearch:
         existing_id = self._global_node_key_map.get(state_key)
         if existing_id is not None:
             existing = self._global_best_nodes.get(existing_id)
-            if existing is not None and existing.cum_score >= node.cum_score:
+            if existing is not None and self._global_rank_key(existing) >= self._global_rank_key(node):
                 return
             if existing_id in self._global_best_nodes:
                 del self._global_best_nodes[existing_id]
-        heapq.heappush(self._global_best_heap, (node.cum_score, -node.id, node.id, state_key))
+        heapq.heappush(
+            self._global_best_heap, (node.aux_score, node.cum_score, -node.id, node.id, state_key)
+        )
         self._global_best_nodes[node.id] = node
         self._global_node_key_map[state_key] = node.id
-        while len(self._global_best_nodes) > self._return_top_k:
+        while len(self._global_best_nodes) > self._return_top_k and self._global_best_heap:
             entry = heapq.heappop(self._global_best_heap)
-            if len(entry) == 4:
-                _, _, nid, key = entry
+            if len(entry) == 5:
+                aux, score, _, nid, key = entry
             else:
-                _, _, nid = entry
+                aux, score, nid = entry
                 key = None
             if nid in self._global_best_nodes:
                 del self._global_best_nodes[nid]
@@ -270,10 +286,10 @@ class BeamSearch:
     def _cleanup_global_heap(self) -> None:
         while self._global_best_heap:
             entry = self._global_best_heap[0]
-            if len(entry) == 4:
-                _, _, nid, key = entry
+            if len(entry) == 5:
+                aux, score, _, nid, key = entry
             else:
-                _, _, nid = entry
+                aux, score, nid = entry
                 key = None
             if nid in self._global_best_nodes:
                 break
@@ -285,7 +301,7 @@ class BeamSearch:
         """Return globally best nodes sorted by score."""
         self._cleanup_global_heap()
         nodes = list(self._global_best_nodes.values())
-        nodes.sort(key=self._rank_key, reverse=True)
+        nodes.sort(key=self._global_rank_key, reverse=True)
         if len(nodes) > self._return_top_k:
             nodes = nodes[: self._return_top_k]
         return nodes
