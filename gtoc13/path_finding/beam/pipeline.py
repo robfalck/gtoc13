@@ -45,6 +45,7 @@ def make_expand_fn(
     allow_repeat: bool = True,
     same_body_samples: Optional[int] = None,
     seed_count: Optional[int] = None,
+    max_body_visits: Optional[int] = None,
 ) -> Callable[[State], Iterable[Proposal]]:
     """Return a cheap proposal generator bound to the given configuration."""
 
@@ -54,6 +55,9 @@ def make_expand_fn(
         last_body = path[-1].body
         current_time = path[-1].t
         samples_same = same_body_samples if same_body_samples is not None else registry.tof_sample_count
+        visit_counts: dict[int, int] = {}
+        for enc in path:
+            visit_counts[enc.body] = visit_counts.get(enc.body, 0) + 1
 
         if (
             seed_count is not None
@@ -158,6 +162,8 @@ def make_expand_fn(
                 grid = _build_tof_grid(tgt, tmin, tmax, registry.tof_sample_count)
                 if grid is None:
                     continue
+            if max_body_visits is not None and visit_counts.get(tgt, 0) >= max_body_visits:
+                continue
             for tof_days in grid:
                 tof_days = float(tof_days)
                 if tof_days <= 0.0:

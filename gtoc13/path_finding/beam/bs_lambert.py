@@ -70,6 +70,7 @@ hohmann_bounds_for_bodies = scoring_hohmann_bounds_for_bodies
 
 
 _DAYS_PER_YEAR = float(YEAR / DAY)
+_MAX_BODY_VISITS = 13
 
 
 def _format_encounter(enc: Encounter, idx: int) -> str:
@@ -409,6 +410,7 @@ def run_cli() -> None:
         allow_repeat=not args.no_repeat,
         same_body_samples=registry.tof_sample_count,
         seed_count=seed_count_value,
+        max_body_visits=_MAX_BODY_VISITS,
     )
     selected_score_fn = make_score_fn(config, registry, args.score_mode)
 
