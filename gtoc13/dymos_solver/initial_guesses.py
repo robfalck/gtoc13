@@ -263,6 +263,135 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
             'v': v_kms,
             'u': u}
 
+
+def _guess_vinf_propagation(phase, from_body, to_body, t1, t2, control, v_inf):
+    """
+    Generate an initial guess by propagating a prescribed hyperbolic excess velocity.
+
+    This helper assumes we know the outgoing v-infinity relative to the departure
+    body. It forms the corresponding inertial velocity, propagates the two-body
+    trajectory analytically with :func:`propagate_ballistic`, and evaluates that
+    state history on the phase transcription nodes.
+
+    Parameters
+    ----------
+    phase : dymos.Phase
+        Phase whose transcription defines the collocation nodes.
+    from_body : int
+        ID of the departure body or -1 to denote the start-plane.
+    to_body : int
+        ID of the arrival body (used for endpoint location only).
+    t1 : float
+        Departure epoch in seconds.
+    t2 : float
+        Arrival epoch in seconds.
+    control : int or str
+        Control flag (same semantics as other guess helpers).
+    v_inf : array_like, shape (3,)
+        Hyperbolic excess velocity relative to ``from_body`` in km/s.
+
+    Returns
+    -------
+    dict
+        Keys match the other guess helpers: ``t_initial``, ``times_s``, ``dt``,
+        ``r``, ``v``, and ``u``.
+    """
+    if from_body == -1:
+        # Start plane position matches other guess helpers; supplied velocity is inertial.
+        r1 = np.array([-200 * KMPDU,
+                       bodies_data[to_body].get_state(t2).r[1],
+                       bodies_data[to_body].get_state(t2).r[2]])
+        v0 = np.asarray(v_inf, dtype=float)
+    else:
+        departure_state = bodies_data[from_body].get_state(t1)
+        r1 = np.array(departure_state.r, dtype=float)
+        # Convert v-infinity (relative) to inertial by adding body velocity.
+        v0 = np.array(departure_state.v, dtype=float) + np.asarray(v_inf, dtype=float)
+
+    dt_arc_s = t2 - t1
+    nodes_tau = phase.options['transcription'].grid_data.node_ptau
+    node_times = t1 + 0.5 * (nodes_tau + 1) * dt_arc_s
+
+    r_km, v_kms = propagate_ballistic(r1, v0, node_times)
+
+    if control == 0:
+        u = np.zeros((1, 3))
+    else:
+        r_mag = np.linalg.norm(r_km, axis=-1, keepdims=True)
+        u = -r_km / r_mag
+
+    return {'t_initial': t1,
+            'times_s': node_times,
+            'dt': dt_arc_s,
+            'r': r_km,
+            'v': v_kms,
+            'u': u}
+
+
+def _guess_propagation(phase, from_body, to_body, t1, t2, control, v1):
+    """
+    Generate an initial guess by propagating a prescribed hyperbolic excess velocity.
+
+    This helper assumes we know the outgoing v-infinity relative to the departure
+    body. It forms the corresponding inertial velocity, propagates the two-body
+    trajectory analytically with :func:`propagate_ballistic`, and evaluates that
+    state history on the phase transcription nodes.
+
+    Parameters
+    ----------
+    phase : dymos.Phase
+        Phase whose transcription defines the collocation nodes.
+    from_body : int
+        ID of the departure body or -1 to denote the start-plane.
+    to_body : int
+        ID of the arrival body (used for endpoint location only).
+    t1 : float
+        Departure epoch in seconds.
+    t2 : float
+        Arrival epoch in seconds.
+    control : int or str
+        Control flag (same semantics as other guess helpers).
+    v_inf : array_like, shape (3,)
+        Hyperbolic excess velocity relative to ``from_body`` in km/s.
+
+    Returns
+    -------
+    dict
+        Keys match the other guess helpers: ``t_initial``, ``times_s``, ``dt``,
+        ``r``, ``v``, and ``u``.
+    """
+    if from_body == -1:
+        # Start plane position matches other guess helpers; supplied velocity is inertial.
+        r1 = np.array([-200 * KMPDU,
+                       bodies_data[to_body].get_state(t2).r[1],
+                       bodies_data[to_body].get_state(t2).r[2]])
+        v0 = np.asarray(v1, dtype=float)
+    else:
+        departure_state = bodies_data[from_body].get_state(t1)
+        r1 = np.array(departure_state.r, dtype=float)
+        # Convert v-infinity (relative) to inertial by adding body velocity.
+        v0 = np.asarray(v1, dtype=float)
+
+    dt_arc_s = t2 - t1
+    nodes_tau = phase.options['transcription'].grid_data.node_ptau
+    node_times = t1 + 0.5 * (nodes_tau + 1) * dt_arc_s
+
+    r_km, v_kms = propagate_ballistic(r1, v0, node_times)
+
+    if control == 0:
+        u = np.zeros((1, 3))
+    else:
+        r_mag = np.linalg.norm(r_km, axis=-1, keepdims=True)
+        u = -r_km / r_mag
+
+    return {'t_initial': t1,
+            'times_s': node_times,
+            'dt': dt_arc_s,
+            'r': r_km,
+            'v': v_kms,
+            'u': u}
+
+
 def set_initial_guesses(prob, bodies, flyby_times, t0, controls,
                         guess_solution=None, single_arc=False):
     from gtoc13.constants import YEAR

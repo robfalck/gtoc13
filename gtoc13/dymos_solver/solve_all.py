@@ -77,7 +77,8 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
                                     default_opt_prob=True,
                                     opt_initial=True,
                                     t_max=199.999,
-                                    obj='J'):
+                                    obj='J',
+                                    prob_name='multi_arc_prob'):
     N = len(bodies)
 
     if isinstance(num_nodes, int):
@@ -90,7 +91,7 @@ def get_dymos_serial_solver_problem(bodies: Sequence[int],
     else:
         _control = controls
 
-    prob = om.Problem()
+    prob = om.Problem(name=prob_name)
 
     prob.model.add_subsystem('ephem', EphemComp(bodies=bodies), promotes=['*'])
 
@@ -447,7 +448,8 @@ def solve_all_arcs(args):
                                            warm_start=False,
                                            default_opt_prob=True,
                                            t_max=args.max_time,
-                                           obj=args.obj)
+                                           obj=args.obj,
+                                           prob_name='solve_all_arcs')
     prob.setup()
 
     set_initial_guesses(prob, bodies=bodies, flyby_times=flyby_times,
