@@ -15,7 +15,7 @@ from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
 from gtoc13.dymos_solver.miss_distance_comp import MissDisanceComp
 from gtoc13.dymos_solver.v_in_out_comp import SingleArcVInOutComp
 from gtoc13.dymos_solver.score_comp import ScoreComp
-from gtoc13.dymos_solver.initial_guesses import _guess_propagation
+from gtoc13.dymos_solver.initial_guesses import _guess_propagation, _guess_lambert
 from gtoc13.dymos_solver.solve_all import create_solution
 
 
@@ -197,7 +197,8 @@ def solve_arc(from_body: int,
               mode: str='feasible',
               prob_name='solve_arc_prob',
               obj='J',
-              num_nodes=20):
+              num_nodes=20,
+              guess='propagate'):
 
     bodies=[from_body, to_body]
 
@@ -226,11 +227,18 @@ def solve_arc(from_body: int,
     prob.set_val('t0', times_s[0], units='s')
     prob.set_val('dt', np.diff(times_s), units='s')
 
-    guess = _guess_propagation(phase,
-                               from_body=bodies[0], to_body=bodies[1],
+    if guess.lower() == 'propagate':
+        guess = _guess_propagation(phase,
+                                from_body=bodies[0], to_body=bodies[1],
+                                t1=times_s[0], t2=times_s[1],
+                                v1=v_out_1,
+                                control=control)
+    elif guess.lower() == 'lambert':
+        guess = _guess_lambert(phase, from_body=bodies[0], to_body=bodies[1],
                                t1=times_s[0], t2=times_s[1],
-                               v1=v_out_1,
                                control=control)
+    else:
+        print('Error: Unrecognized guess {guess}. Must be "lambert" or "propagate"')
 
     phase.set_state_val('r', vals=guess['r'], time_vals=guess['times_s'], units='km')
     phase.set_state_val('v', vals=guess['v'], time_vals=guess['times_s'], units='km/s')
