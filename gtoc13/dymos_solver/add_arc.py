@@ -208,8 +208,6 @@ def add_arc(args):
     t1_year = guess_sol.arcs[-1].epoch / YEAR
     body_1 = guess_sol.arcs[-1].body_id
     body_2 = args.body
-    v_inf_in_1 = guess_sol.arcs[-1].v_inf_in
-    v_inf_out_1 = guess_sol.arcs[-1].v_inf_out
     v_in_1 = guess_sol.arcs[-1].velocity_in
     v_out_1 = guess_sol.arcs[-1].velocity_out
 
@@ -223,7 +221,8 @@ def add_arc(args):
                                    opt_dt=not args.fix_dt,
                                    control=args.control,
                                    obj=args.obj,
-                                   mode=args.mode
+                                   mode=args.mode,
+                                   guess=args.guess
                                    )
 
     seed_file = Path(args.solution_file)

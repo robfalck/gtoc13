@@ -230,11 +230,14 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
 
     dt_arc_s = t2 - t1
 
-    # Convert to standard numpy arrays to avoid numba compilation issues with read-only buffers
+    # Convert to standard numpy arrays to avoid compilation issues with read-only buffers
     r1 = np.array(r1, dtype=float, copy=True)
     r2 = np.array(r2, dtype=float, copy=True)
 
     lambert_sol = lambert(MU_ALTAIRA, r1, r2, dt_arc_s)
+
+    print('lambert sol')
+    print(lambert_sol)
 
     v1 = lambert_sol[0]
     # v1, _, resid = vallado2013_jax(MU_ALTAIRA, r1, r2, dt_arc_s)
@@ -248,7 +251,28 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
         r_km = guess['r']
         v_kms = guess['v']
     else:
-        r_km, v_kms = propagate_ballistic(r1, v1, node_times)
+        # r_km, v_kms = propagate_ballistic(r1, v1, node_times)
+
+        def _sim_ode(t, y):
+            r = y[:3]
+            v = y[-3:]
+
+            r_mag = np.linalg.norm(r)
+
+            a_grav = -MU_ALTAIRA * r / r_mag**3
+            a_total = a_grav #+ a_sail
+
+            ydot = np.concatenate([v, a_total])
+            return ydot
+
+        y0 = np.concatenate((r1, v1))
+
+        from scipy.integrate import solve_ivp
+        sol = solve_ivp(_sim_ode, t_span=(t1, t2), y0=y0, method='RK45', t_eval=node_times,
+                        dense_output=False, first_step=86400.0, atol=1.0E-12, rtol=1.0E-12)
+
+        r_km = sol.y.T[:, :3]
+        v_kms = sol.y.T[:, 3:]
 
     if control == 0:
         u = np.zeros((1, 3))
@@ -312,7 +336,7 @@ def _guess_vinf_propagation(phase, from_body, to_body, t1, t2, control, v_inf):
     nodes_tau = phase.options['transcription'].grid_data.node_ptau
     node_times = t1 + 0.5 * (nodes_tau + 1) * dt_arc_s
 
-    r_km, v_kms = propagate_ballistic(r1, v0, node_times)
+    # r_km, v_kms = propagate_ballistic(r1, v0, node_times)
 
     if control == 0:
         u = np.zeros((1, 3))
@@ -376,7 +400,28 @@ def _guess_propagation(phase, from_body, to_body, t1, t2, control, v1):
     nodes_tau = phase.options['transcription'].grid_data.node_ptau
     node_times = t1 + 0.5 * (nodes_tau + 1) * dt_arc_s
 
-    r_km, v_kms = propagate_ballistic(r1, v0, node_times)
+    # r_km, v_kms = propagate_ballistic(r1, v0, node_times)
+
+    def _sim_ode(t, y):
+        r = y[:3]
+        v = y[-3:]
+
+        r_mag = np.linalg.norm(r)
+
+        a_grav = -MU_ALTAIRA * r / r_mag**3
+        a_total = a_grav #+ a_sail
+
+        ydot = np.concatenate([v, a_total])
+        return ydot
+
+    y0 = np.concatenate((r1, v1))
+
+    from scipy.integrate import solve_ivp
+    sol = solve_ivp(_sim_ode, t_span=(t1, t2), y0=y0, method='RK45', t_eval=node_times,
+                    dense_output=False, first_step=86400.0, atol=1.0E-12, rtol=1.0E-12)
+
+    r_km = sol.y.T[:, :3]
+    v_kms = sol.y.T[:, 3:]
 
     if control == 0:
         u = np.zeros((1, 3))

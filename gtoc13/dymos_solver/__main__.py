@@ -235,6 +235,13 @@ Examples:
         help="Control flag for each arc: 0, 1, or 'r' for radial (space-separated, must match number of bodies)"
     )
 
+    add_arc_parser.add_argument(
+        '--guess',
+        type=str,
+        help='Trajectory guess generation. Either "propagate" to propagate the final' \
+        ' velocity of the previous solution, or "lambert" to guess via a lambert solution.'
+    )
+
     # Solver options
     add_arc_parser.add_argument(
         '--num-nodes', '-n',
