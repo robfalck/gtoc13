@@ -14,7 +14,8 @@ from gtoc13.dymos_solver.ephem_comp import EphemCompNoStartPlane
 from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
 from gtoc13.dymos_solver.miss_distance_comp import MissDisanceComp
 from gtoc13.dymos_solver.v_in_out_comp import SingleArcVInOutComp
-from gtoc13.dymos_solver.initial_guesses import _guess_lambert
+from gtoc13.dymos_solver.score_comp import ScoreComp
+from gtoc13.dymos_solver.initial_guesses import _guess_propagation
 from gtoc13.dymos_solver.solve_all import create_solution
 
 
@@ -22,7 +23,9 @@ def get_single_arc_problem(bodies: Sequence[int],
                            control: Sequence[int] = None,
                            num_nodes=20,
                            t_max=199.999,
-                           obj='J'):
+                           obj='J',
+                           opt_v_in_prev_flyby=True,
+                           prob_name='single_arc_problem'):
     N = len(bodies) - 1
 
     prob = om.Problem()
@@ -79,13 +82,13 @@ def get_single_arc_problem(bodies: Sequence[int],
                              promotes_outputs=['E_end'])
     prob.model.connect('body_pos', 'r_end', src_indices=om.slicer[-1, ...])
 
-    # prob.model.add_subsystem('score_comp',
-    #                          ScoreComp(bodies=bodies),
-    #                          promotes_outputs=['J'])
+    prob.model.add_subsystem('score_comp',
+                             ScoreComp(bodies=bodies),
+                             promotes_outputs=['J'])
 
-    # prob.model.connect('body_pos', 'score_comp.body_pos')
+    prob.model.connect('body_pos', 'score_comp.body_pos')
 
-    # prob.model.connect('flyby_comp.v_inf_in', 'score_comp.v_inf')
+    prob.model.connect('flyby_comp.v_inf_in', 'score_comp.v_inf')
 
     # #
     # # DESIGN VARIABLES
@@ -95,7 +98,8 @@ def get_single_arc_problem(bodies: Sequence[int],
     # prob.model.add_design_var('dt', lower=0.0, upper=200, ref=10.0, units='gtoc_year')
 
     # # Incoming inertial velocity before first flyby
-    prob.model.add_design_var('v_in_prev_flyby', units='DU/TU')
+    if opt_v_in_prev_flyby:
+        prob.model.add_design_var('v_in_prev_flyby', units='DU/TU')
 
     # # Outgoing inertial velocity after last flyby
     prob.model.add_design_var('v_end', units='DU/TU')
@@ -181,15 +185,21 @@ def get_single_arc_problem(bodies: Sequence[int],
     return prob, phase
 
 
-def solve_arc(from_body: int=1001, to_body: int=1122,
-              t1: float=45656.25*DAY/YEAR,
-              t2: float=(45656.25 + 159.46496724159078)*DAY/YEAR,
+def solve_arc(from_body: int,
+              to_body: int,
+              t1: float,
+              t2: float,
+              v_in_1: Sequence,
+              v_out_1: Sequence,
+              opt_v_in_1: bool=True,
               opt_dt: bool=False,
               control: int=0,
-              mode: str='feasible'):
+              mode: str='feasible',
+              prob_name='solve_arc_prob',
+              obj='J',
+              num_nodes=20):
 
     bodies=[from_body, to_body]
-    # times_day=np.array([45656.25, 45656.25 + 159.46496724159078])
 
     times_s = np.array([t1, t2]) * YEAR
     dt_s = np.diff(times_s)
@@ -197,7 +207,10 @@ def solve_arc(from_body: int=1001, to_body: int=1122,
 
     prob, phase = get_single_arc_problem(bodies=bodies,
                                          control=control,
-                                         obj='t')
+                                         obj=obj,
+                                         num_nodes=num_nodes,
+                                         opt_v_in_prev_flyby=opt_v_in_1,
+                                         prob_name=prob_name)
 
     phase.set_time_options(fix_initial=True, fix_duration=True)
     phase.set_simulate_options(times_per_seg=200)
@@ -213,8 +226,11 @@ def solve_arc(from_body: int=1001, to_body: int=1122,
     prob.set_val('t0', times_s[0], units='s')
     prob.set_val('dt', np.diff(times_s), units='s')
 
-    guess = _guess_lambert(phase, from_body=bodies[0], to_body=bodies[1],
-                           t1=times_s[0], t2=times_s[1], control=control)
+    guess = _guess_propagation(phase,
+                               from_body=bodies[0], to_body=bodies[1],
+                               t1=times_s[0], t2=times_s[1],
+                               v1=v_out_1,
+                               control=control)
 
     phase.set_state_val('r', vals=guess['r'], time_vals=guess['times_s'], units='km')
     phase.set_state_val('v', vals=guess['v'], time_vals=guess['times_s'], units='km/s')
@@ -224,7 +240,9 @@ def solve_arc(from_body: int=1001, to_body: int=1122,
     elif control == 0:
         phase.set_parameter_options('u_n', [0., 0., 0.])
 
-    prob.set_val('v_in_prev_flyby', guess['v'][0, ...], units='km/s')
+    v_in_prev_flyby = np.array(v_in_1)
+
+    prob.set_val('v_in_prev_flyby', v_in_prev_flyby, units='km/s')
     prob.set_val('v_end', guess['v'][-1, ...], units='km/s')
 
     if mode.lower().startswith('feas'):
@@ -239,7 +257,7 @@ def solve_arc(from_body: int=1001, to_body: int=1122,
 
     sol, _ = create_solution(prob, bodies, controls=[control], save_sol=False, single_arc=True)
 
-    return not failed, sol
+    return not failed, sol, prob
 
 if __name__ == '__main__':
 

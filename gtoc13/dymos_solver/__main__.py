@@ -212,8 +212,20 @@ Examples:
 
     add_arc_parser.add_argument(
         '--flyby-dt',
-        type=int,
+        type=float,
         help='Flight time to get to next body (yr)'
+    )
+
+    add_arc_parser.add_argument(
+        '--fix-dt',
+        action='store_true',
+        help='If True, do not treat flight time as a design variable.'
+    )
+
+    add_arc_parser.add_argument(
+        '--fix-vin1',
+        action='store_true',
+        help='If True, do not treat the first flyby incoming velocity as a design variable.'
     )
 
     add_arc_parser.add_argument(
