@@ -236,9 +236,6 @@ def _guess_lambert(phase, from_body, to_body, t1, t2, control):
 
     lambert_sol = lambert(MU_ALTAIRA, r1, r2, dt_arc_s)
 
-    print('lambert sol')
-    print(lambert_sol)
-
     v1 = lambert_sol[0]
     # v1, _, resid = vallado2013_jax(MU_ALTAIRA, r1, r2, dt_arc_s)
     nodes_tau = phase.options['transcription'].grid_data.node_ptau
