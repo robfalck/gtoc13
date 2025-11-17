@@ -9,7 +9,7 @@ import dymos as dm
 from gtoc13.constants import DAY, YEAR
 from gtoc13.bodies import bodies_data
 from gtoc13.dymos_solver.energy_comp import EnergyComp
-from gtoc13.dymos_solver.solve_all import get_phase
+from gtoc13.dymos_solver.phases import get_phase
 from gtoc13.dymos_solver.ephem_comp import EphemCompNoStartPlane
 from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
 from gtoc13.dymos_solver.miss_distance_comp import MissDisanceComp
