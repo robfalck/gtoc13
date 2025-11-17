@@ -15,60 +15,12 @@ from gtoc13.dymos_solver.ephem_comp import EphemComp
 from gtoc13.dymos_solver.flyby_comp import FlybyDefectComp
 from gtoc13.dymos_solver.energy_comp import EnergyComp
 from gtoc13.dymos_solver.initial_guesses import set_initial_guesses
+from gtoc13.dymos_solver.phases import get_phase
 from gtoc13.dymos_solver.v_in_out_comp import VInOutComp
 from gtoc13.dymos_solver.score_comp import ScoreComp
 from gtoc13.dymos_solver.miss_distance_comp import MissDisanceComp
 
-from gtoc13.dymos_solver.ode_comp import SolarSailRadialControlODEComp, SolarSailODEComp
 
-
-def get_phase(num_nodes, control):
-    tx = dm.Birkhoff(num_nodes=num_nodes, grid_type='lgl')
-    # tx = dm.PicardShooting(num_segments=1, nodes_per_seg=num_nodes, solve_segments='forward')
-
-    ode_cls = SolarSailRadialControlODEComp if control == 'r' else SolarSailODEComp
-
-    phase = dm.Phase(ode_class=ode_cls,
-                     transcription=tx)
-
-    phase.add_state('r', rate_source='drdt', units='DU',
-                    shape=(3,), fix_initial=False, fix_final=False,
-                    targets=['r'], ref=10.0, defect_ref=10.0)
-
-    phase.add_state('v', rate_source='dvdt', units='DU/TU',
-                    shape=(3,), fix_initial=False, fix_final=False,
-                    targets=['v'],
-                    ref=1.0, defect_ref=1.0)
-
-    # We're just going to construct this phase and return it without
-    # a control, so that the calling function can handle whether
-    # u_n should be a control or a parameter.
-
-    # Control: sail normal unit vector (ballistic = zero for Keplerian orbit)
-    if control == 1:
-        phase.add_control('u_n', units='unitless', shape=(3,), opt=True,
-                        val=np.ones((3,)), targets=['u_n'])
-        phase.add_path_constraint('u_n_norm', equals=1.0)
-        phase.add_path_constraint('cos_alpha', lower=0.0)
-    elif control == 0:
-        phase.add_parameter('u_n', units='unitless', shape=(3,),
-                            val=np.zeros((3,)), opt=False)
-
-
-    # Set time options
-    # The fix_initial here is really a bit of a misnomer.
-    # They're not design variables, and we can therefore connect
-    # t_initial and t_duration to upstream outputs.
-    phase.set_time_options(fix_initial=True,
-                           fix_duration=True,
-                           units='TU', )
-
-    phase.add_timeseries_output('a_grav', units='km/s**2')
-    phase.add_timeseries_output('a_sail', units='km/s**2')
-    phase.add_timeseries_output('u_n', units='unitless')
-    phase.add_timeseries_output('u_n_norm', units='unitless')
-
-    return phase
 
 def get_dymos_serial_solver_problem(bodies: Sequence[int],
                                     controls: Sequence[int] = None,
